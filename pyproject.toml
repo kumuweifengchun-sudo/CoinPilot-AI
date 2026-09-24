@@ -1,0 +1,25 @@
+[project]
+name = "coinpilot-ai"
+version = "3.2.1"
+description = "CoinPilot AI · 币航 — 集桌面盯盘、交易辅助与 AI 复盘于一体的 AI 加密交易工作台"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = ["PyQt6>=6.8,<7"]
+
+[project.urls]
+Repository = "https://github.com/kumuweifengchun-sudo/CoinPilot-AI"
+
+[dependency-groups]
+dev = ["pytest>=8,<10"]
+build = ["pyinstaller>=6.11,<7"]
+
+[tool.uv]
+default-groups = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[[tool.uv.index]]
+url="https://mirrors.cloud.tencent.com/pypi/simple/"
+default=true

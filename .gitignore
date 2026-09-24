@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+artifacts/
+*.egg-info/
+docs
+*.workbench.sqlite3*
+*.fault.log
+Inter-4.1/
+Inter-4.1.zip
