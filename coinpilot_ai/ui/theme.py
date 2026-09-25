@@ -119,8 +119,10 @@ _STYLE = Template("""
 QMainWindow, QDialog, QWidget#workbenchRoot { background: ${background}; }
 QDockWidget { border: 1px solid ${border}; }
 QDockWidget::title { background: ${surface_raised}; padding: 6px; color: ${text_secondary}; }
-QDockWidget::close-button, QDockWidget::float-button { padding: 2px; background: ${surface_hover}; }
-QDockWidget::close-button:hover, QDockWidget::float-button:hover { background: ${border_strong}; }
+QWidget#dockTitleBar { background: ${surface_raised}; }
+QWidget#dockTitleBar QToolButton { padding: 0; border: none; border-radius: 3px; background: transparent; }
+QWidget#dockTitleBar QToolButton:hover { background: ${surface_hover}; }
+QWidget#dockTitleBar QToolButton:pressed { background: ${surface_selected}; }
 QMainWindow::separator { background: ${border}; width: 5px; height: 5px; }
 QMainWindow::separator:hover { background: ${border_strong}; }
 QWidget { color: ${text_secondary}; font-family: 'Inter Variable', 'Microsoft YaHei UI'; font-size: 12px; }

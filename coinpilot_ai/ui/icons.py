@@ -14,10 +14,14 @@ ALIASES = {
     "text": "type", "measure": "ruler", "ema": "chart-no-axes-combined",
     "objects": "layers", "delete": "trash", "workbench": "panel-top", "mini": "monitor",
 }
-# 仅下列专用图表符号为本项目原创，其余保留 Lucide 许可。
+# 下列图表及窗口控制符号为本项目原创，其余保留 Lucide 许可。
 CUSTOM = {
     "trend": '<path d="M5 18 19 6"/><circle cx="5" cy="18" r="2"/><circle cx="19" cy="6" r="2"/>',
     "fib": '<path d="M4 4h16M4 10h12M4 15h16M4 20h10M4 4v16"/>',
+    "window-minimize": '<path d="M5 12h14"/>',
+    "window-maximize": '<rect x="5" y="5" width="14" height="14" rx=".5"/>',
+    "window-restore": '<path d="M9 6V4h11v11h-2"/><rect x="4" y="9" width="11" height="11" rx=".5"/>',
+    "window-close": '<path d="m6 6 12 12M18 6 6 18"/>',
 }
 
 APP_ICON_PATH = "coinpilot_ai/assets/app_icon/app.ico"

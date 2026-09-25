@@ -2,10 +2,10 @@
 import sys
 
 from PyQt6.QtCore import QEvent, QPoint, QSize, Qt
-from PyQt6.QtWidgets import (QAbstractButton, QApplication, QButtonGroup, QHBoxLayout,
-                            QLabel, QMenu, QStyle, QToolButton, QWidget)
+from PyQt6.QtWidgets import (QAbstractButton, QApplication, QButtonGroup, QDockWidget, QHBoxLayout,
+                            QLabel, QMenu, QToolButton, QWidget)
 
-from coinpilot_ai.ui.icons import application_icon
+from coinpilot_ai.ui.icons import application_icon, icon
 from coinpilot_ai.ui.theme import color
 
 
@@ -71,6 +71,8 @@ class WorkbenchTitleBar(QWidget):
     def window_button(self, text, callback):
         button = QToolButton()
         button.setFixedSize(42, self.HEIGHT - 8)
+        button.setProperty('windowControl', True)
+        button.setIconSize(QSize(18, 18))
         button.setAccessibleName(text)
         button.setToolTip(text)
         button.clicked.connect(callback)
@@ -82,23 +84,24 @@ class WorkbenchTitleBar(QWidget):
 
     def sync_controls(self):
         maximized = self.owner.isMaximized()
-        style = self.style()
-        self.minimize_button.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_TitleBarMinButton))
-        self.maximize_button.setIcon(style.standardIcon(
-            QStyle.StandardPixmap.SP_TitleBarNormalButton if maximized else QStyle.StandardPixmap.SP_TitleBarMaxButton))
+        self.minimize_button.setIcon(icon('window-minimize'))
+        self.maximize_button.setIcon(icon('window-restore' if maximized else 'window-maximize'))
         self.maximize_button.setToolTip('还原' if maximized else '最大化')
         self.maximize_button.setAccessibleName(self.maximize_button.toolTip())
-        self.close_button.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_TitleBarCloseButton))
+        self.close_button.setIcon(icon('window-close'))
 
     def apply_theme(self):
         self.setStyleSheet(
             f'QWidget#workbenchTitleBar {{background:{color("surface")};}}'
             'QToolButton {border:0; border-radius:4px; padding:6px 12px; background:transparent;}'
+            'QToolButton[windowControl="true"] {padding:0;}'
             f'QToolButton:hover {{background:{color("surface_hover")};}}'
+            f'QToolButton:pressed {{background:{color("surface_selected")};}}'
             f'QToolButton:checked {{background:{color("surface_selected")};color:{color("text")};}}'
             'QToolButton::menu-indicator {width:0;}'
             f'QLabel#windowCaption {{color:{color("text_muted")};}}'
-            f'QToolButton#windowClose:hover {{background:{color("negative")};}}')
+            'QToolButton#windowClose:hover {background:#C42B3B;}'
+            'QToolButton#windowClose:pressed {background:#A92331;}')
         self.logo.setPixmap(application_icon().pixmap(QSize(24, 24), self.devicePixelRatioF()))
         self.sync_controls()
 
@@ -197,3 +200,43 @@ class WorkbenchTitleBar(QWidget):
             point = self.mapFrom(self.owner, QPoint(round(x / dpr), round(y / dpr)))
             return True, 2 if self.is_drag_region(point) else 1  # HTCAPTION / HTCLIENT
         return None
+
+
+class DockTitleBar(QWidget):
+    """固定逻辑尺寸的面板操作区；空白处事件交回 Qt 处理拖动和双击。"""
+
+    def __init__(self, dock):
+        super().__init__(dock)
+        self.setObjectName('dockTitleBar')
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        self.setFixedHeight(28)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(8, 2, 4, 2)
+        row.setSpacing(2)
+        label = QLabel(dock.windowTitle())
+        label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        dock.windowTitleChanged.connect(label.setText)
+        row.addWidget(label, 1)
+        self.float_button = QToolButton(self)
+        self.close_button = QToolButton(self)
+        for button, name in ((self.float_button, 'window-restore'), (self.close_button, 'window-close')):
+            button.setFixedSize(24, 24)
+            button.setIconSize(QSize(16, 16))
+            button.setIcon(icon(name))
+            row.addWidget(button)
+        self.close_button.setToolTip('关闭面板')
+        self.close_button.setAccessibleName('关闭面板')
+        self.close_button.clicked.connect(dock.close)
+        self.float_button.clicked.connect(lambda: dock.setFloating(not dock.isFloating()))
+        dock.topLevelChanged.connect(self.sync_controls)
+        dock.featuresChanged.connect(self.sync_controls)
+        self.sync_controls()
+
+    def sync_controls(self, *_):
+        dock = self.parentWidget()
+        features = dock.features()
+        self.close_button.setVisible(bool(features & QDockWidget.DockWidgetFeature.DockWidgetClosable))
+        self.float_button.setVisible(bool(features & QDockWidget.DockWidgetFeature.DockWidgetFloatable))
+        text = '停靠面板' if dock.isFloating() else '浮动面板'
+        self.float_button.setToolTip(text)
+        self.float_button.setAccessibleName(text)

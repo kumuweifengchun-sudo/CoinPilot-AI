@@ -4,7 +4,7 @@ from copy import deepcopy
 from dataclasses import replace
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtWidgets import (QButtonGroup, QComboBox, QHBoxLayout, QLabel, QLineEdit, QMenu, QPushButton, QScrollArea, QSplitter,
+from PyQt6.QtWidgets import (QButtonGroup, QComboBox, QHBoxLayout, QLabel, QMenu, QPushButton, QScrollArea, QSizePolicy, QSplitter,
                             QToolButton, QVBoxLayout, QWidget)
 
 from .canvas import CandleChart
@@ -12,6 +12,7 @@ from .dialogs import EmaDialog, ObjectsDialog, edit_drawing
 from .settings import IndicatorSettingsDialog
 from .indicator_strip import IndicatorStrip
 from .derivative_strip import DerivativeStrip
+from .instrument_selector import InstrumentSelector
 from coinpilot_ai.market.intervals import BARS
 from coinpilot_ai.charts.state import TOOLS, trade_lines, normalize_indicators
 from coinpilot_ai.trading.models import instrument_id
@@ -81,14 +82,14 @@ class ChartPanel(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(2)
+        selectors = QHBoxLayout()
+        selectors.setSpacing(6)
+        self.symbol_choice = InstrumentSelector(service, self.instrument, self)
+        self.symbol_choice.instrument_selected.connect(self.select_symbol)
+        selectors.addWidget(self.symbol_choice)
+        root.addLayout(selectors)
         controls = QHBoxLayout()
         controls.setSpacing(2)
-        self.symbol_edit = None
-        if local_pair is not None:
-            self.symbol_edit = QLineEdit(local_pair[0])
-            self.symbol_edit.setFixedWidth(145)
-            self.symbol_edit.editingFinished.connect(self.select_symbol)
-            controls.addWidget(self.symbol_edit)
         self.period_buttons = {}
         for bar in BARS:
             btn = self.small_button(bar, lambda _, b=bar: self.select_bar(b))
@@ -97,10 +98,13 @@ class ChartPanel(QWidget):
             controls.addWidget(btn)
         self.compact_bar = QComboBox()
         for bar in BARS:
-            self.compact_bar.addItem(bar, bar)
-        self.compact_bar.setFixedWidth(72)
+            self.compact_bar.addItem(bar.replace('m', 'min'), bar)
+        self.compact_bar.setAccessibleName('K 线周期')
+        self.compact_bar.setMinimumContentsLength(5)
+        self.compact_bar.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.compact_bar.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.compact_bar.activated.connect(lambda _index: self.select_bar(self.compact_bar.currentData()))
-        controls.addWidget(self.compact_bar)
+        selectors.addWidget(self.compact_bar)
         self.compact_bar.hide()
         controls.addStretch()
         self.compact_hidden = []
@@ -286,13 +290,12 @@ class ChartPanel(QWidget):
     def pair(self):
         return self.instrument, self.bar
 
-    def select_symbol(self):
-        if self.symbol_edit is None:
-            return
-        try:
-            self.set_local_pair(instrument_id(self.symbol_edit.text()), self.bar)
-        except ValueError:
-            self.symbol_edit.setText(self.instrument)
+    def select_symbol(self, instrument):
+        if self.local_pair is None:
+            self.canvas.flush_view()
+            self.service.select(instrument, self.bar)
+        else:
+            self.set_local_pair(instrument, self.bar)
 
     def set_local_pair(self, instrument, bar):
         if self.local_pair is None or bar not in BARS:
@@ -302,8 +305,7 @@ class ChartPanel(QWidget):
             return
         self.canvas.flush_view()
         self.local_pair = pair
-        self.symbol_edit.setText(instrument)
-        self.symbol_edit.setCursorPosition(0)
+        self.symbol_choice.set_instrument(instrument)
         self.refresh("selection")
         self.context_changed.emit(*pair)
 
@@ -316,9 +318,6 @@ class ChartPanel(QWidget):
             widget.setVisible(not compact)
         self.bottom_button.setVisible(not compact)
         self.sidebar_button.setVisible(not compact)
-        if self.symbol_edit is not None:
-            self.symbol_edit.setFixedWidth(125 if compact else 145)
-            self.symbol_edit.setCursorPosition(0)
 
     def choose_tool(self, tool):
         self.tool_buttons[tool].setChecked(True)
@@ -447,6 +446,8 @@ class ChartPanel(QWidget):
         if s.closed:
             return
         if kind in ("selection", "environment"):
+            if self.symbol_choice.instrument != self.instrument:
+                self.symbol_choice.set_instrument(self.instrument)
             self.pending_change = None
             self.canvas.set_context(s.environment, self.instrument, self.bar)
             for bar, btn in self.period_buttons.items():

@@ -5,6 +5,8 @@ from PyQt6.QtCore import QByteArray, QEvent, QObject, Qt, QTimer
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import QApplication, QDockWidget, QMainWindow, QTabWidget
 
+from .titlebar import DockTitleBar
+
 
 class WorkspaceLayout(QObject):
     VERSION = 1
@@ -32,6 +34,7 @@ class WorkspaceLayout(QObject):
             dock = QDockWidget(title, self.host)
             dock.setObjectName('workspace_' + key)
             dock.setWidget(widget)
+            dock.setTitleBarWidget(DockTitleBar(dock))
             dock.installEventFilter(self)
             dock.dockLocationChanged.connect(self.schedule)
             dock.topLevelChanged.connect(self.schedule)

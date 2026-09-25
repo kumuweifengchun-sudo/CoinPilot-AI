@@ -2,7 +2,7 @@
 import pytest
 from PyQt6.QtCore import QPoint, Qt
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QCheckBox, QDockWidget, QLabel, QMenuBar
+from PyQt6.QtWidgets import QCheckBox, QDockWidget, QLabel, QMenuBar, QStyle, QStyleOptionComboBox
 
 from coinpilot_ai.core.config import DEFAULT_CONFIG
 from coinpilot_ai.charts.panel import ChartPanel
@@ -112,6 +112,63 @@ def test_six_chart_contexts_and_named_workspace_restore(workspace, app):
     assert window.scanner_panel.filters["rsi_max"].text() == "25"
 
 
+def test_chart_selectors_support_catalog_search_and_independent_pairs(workspace, app):
+    window, service = workspace
+    grid = window.multi_chart
+    grid.layout_choice.setCurrentIndex(grid.layout_choice.findData(2))
+    second = grid.panels[1]
+    picker = second.symbol_choice
+    original = window.chart.pair
+    service.specs = {'ETH-USDT-SWAP': {}, 'HYPE-USDT-SWAP': {}}
+    service.updated.emit('market')
+    assert picker.findData('ETH-USDT-SWAP') >= 0
+    picker.showPopup()
+    app.processEvents()
+    index = picker.model().index(picker.findData('ETH-USDT-SWAP'), 0)
+    picker.view().scrollTo(index)
+    QTest.mouseClick(picker.view().viewport(), Qt.MouseButton.LeftButton,
+                     pos=picker.view().visualRect(index).center())
+    assert second.instrument == 'ETH-USDT-SWAP'
+    assert window.chart.pair == original
+    editor = picker.lineEdit()
+    editor.setFocus()
+    editor.selectAll()
+    QTest.keyClicks(editor, 'hype')
+    app.processEvents()
+    assert picker.completer().completionCount() == 1
+    service.specs['SOL-USDT-SWAP'] = {}
+    service.updated.emit('market')
+    assert editor.text() == 'hype'
+    QTest.keyClick(editor, Qt.Key.Key_Return)
+    assert second.instrument == 'HYPE-USDT-SWAP'
+    assert second.pair in service.chart_pairs and window.chart.pair == original
+    assert picker.currentText() == 'HYPE/USDT'
+    service.save_watchlist(['SOL-USDT-SWAP', 'BTC-USDT-SWAP'])
+    assert picker.itemData(0) == 'SOL-USDT-SWAP'
+    grid.sync_options['symbol'].setChecked(True)
+    picker.setEditText('SOLUSDT')
+    QTest.keyClick(editor, Qt.Key.Key_Return)
+    assert second.instrument == window.chart.instrument == 'SOL-USDT-SWAP'
+    assert window.chart.symbol_choice.currentText() == 'SOL/USDT'
+
+
+def test_compact_interval_text_fits_in_six_chart_layout(workspace, app):
+    window, _service = workspace
+    grid = window.multi_chart
+    grid.layout_choice.setCurrentIndex(grid.layout_choice.findData(6))
+    app.processEvents()
+    for panel in grid.panels:
+        combo = panel.compact_bar
+        panel.select_bar('15m')
+        option = QStyleOptionComboBox()
+        combo.initStyleOption(option)
+        rect = combo.style().subControlRect(QStyle.ComplexControl.CC_ComboBox, option,
+                                            QStyle.SubControl.SC_ComboBoxEditField, combo)
+        assert combo.currentText() == '15min'
+        assert rect.width() >= combo.fontMetrics().horizontalAdvance(combo.currentText())
+        assert combo.geometry().right() <= panel.width()
+
+
 def test_title_tracks_environment_without_duplicate_branding(workspace, app):
     window, service = workspace
     assert window.windowTitle() == 'CoinPilot AI · 模拟环境'
@@ -182,6 +239,34 @@ def test_titlebar_window_controls_keep_background_service(workspace, app):
     assert not window.isVisible() and not service.closed
     window.show()
     assert window.isVisible() and window.workspace.docks['market'].isVisible()
+
+
+def test_panel_title_controls_preserve_draft_and_follow_layout_lock(workspace, app):
+    window, service = workspace
+    dock = window.workspace.docks['order']
+    bar = dock.titleBarWidget()
+    window.trade.size.setText('123.45')
+    bar.float_button.click()
+    app.processEvents()
+    assert dock.isFloating() and bar.float_button.toolTip() == '停靠面板'
+    bar.float_button.click()
+    app.processEvents()
+    assert not dock.isFloating() and bar.float_button.toolTip() == '浮动面板'
+    QTest.mouseDClick(bar, Qt.MouseButton.LeftButton, pos=QPoint(70, 12))
+    app.processEvents()
+    assert dock.isFloating()
+    QTest.mouseDClick(bar, Qt.MouseButton.LeftButton, pos=QPoint(70, 12))
+    app.processEvents()
+    assert not dock.isFloating()
+    window.workspace.set_locked(True)
+    assert not bar.float_button.isVisible()
+    window.workspace.set_locked(False)
+    assert bar.float_button.isVisible()
+    bar.close_button.click()
+    app.processEvents()
+    assert not dock.isVisible() and not service.closed
+    window.workspace.set_visible('order', True)
+    assert dock.isVisible() and window.trade.size.text() == '123.45'
 
 
 def test_float_hide_reopen_and_pages_preserve_instances_and_draft(workspace, app):
