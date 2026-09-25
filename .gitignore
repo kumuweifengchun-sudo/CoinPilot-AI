@@ -7,7 +7,6 @@ build/
 dist/
 artifacts/
 *.egg-info/
-docs
 *.workbench.sqlite3*
 *.fault.log
 Inter-4.1/

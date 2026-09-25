@@ -4,7 +4,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
-from coinpilot_ai.app import create_application
+from coinpilot_ai.application.bootstrap import create_application
 
 
 @pytest.fixture(scope="session")

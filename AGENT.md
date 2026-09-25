@@ -1,72 +1,91 @@
-# 项目开发协作约定
+# CoinPilot AI 开发协作约定
 
-本文件供参与 CoinPilot AI 开发的 AI 助手和维护者阅读。修改前先查看 [README.md](README.md)、涉及的实现与测试；工作台行为详见 [WORKBENCH.md](WORKBENCH.md)。用户最新明确要求优先于历史描述。
+本文件供参与项目开发的 AI 助手与维护者阅读。开始修改前先阅读 [README.md](README.md)，再检查相关实现、测试与工作区状态。文档中的功能说明必须与当前源码一致。
 
-## 协作规则
+## 协作与修改范围
 
-- 默认用中文沟通，先说明本次修改的目的；完成后说明实际变更、验证结果与未验证部分。
-- **除非用户明确允许，否则不得启动或使用浏览器工具和插件。** 不因需要查文档就默认获得浏览器授权。
-- 只有用户明确要求，或适用的项目／技能指令明确要求时，才委派子代理；普通任务在当前协作中完成。
-- 修改前检查 `git status --short`，保留已有未提交变更和用户文件，不擅自回滚、覆盖或清理。
-- 根据请求确定范围。不要把文档修改扩大为业务重构，也不要把测试通过写成真实账户或线上服务已验收。
-- 优先使用 `rg` / `rg --files` 定位代码。读取配置、日志或生成截图时避免暴露真实凭据及账户资料。
+- 默认使用中文沟通，先说明修改目的，完成后说明实际变更、验证结果及未验证部分。
+- **除非用户明确说明可以使用浏览器，否则不得启动或使用浏览器工具和插件。**
+- 仅在用户或适用指令明确要求子代理、委派或并行代理工作时使用子代理。
+- 修改前执行 `git status --short`，保留已有暂存、未暂存和未跟踪变更。不得擅自回滚、清理或覆盖用户工作。
+- 优先使用 `rg`、`rg --files` 定位代码；以工作区实际文件为准，不照搬已删除目录或旧文档中的路径。
+- 将改动限定在任务范围内。纯文档修改不调整业务逻辑、依赖或版本，也不默认重新打包。
+- 不读取、打印或传播真实凭据和账户资料；不把测试通过描述成线上服务或真实账户已经验收。
 
-## 技术栈与入口
+## 技术栈与代码导航
 
-- 目标平台：Windows 10/11；Python 3.13、PyQt6、SQLite；依赖和构建统一使用 uv。
-- 启动入口：`coinpilot-ai.py` → `coinpilot_ai/app.py`。
-- 迷你窗口：`widget.py`、`settings.py`、`visuals.py`；配置兼容在 `config.py`。
-- 多源公开报价：`providers.py`、`network.py`、`streaming.py`。
-- 托盘与应用服务：`cockpit/desktop.py`、`cockpit/service.py`。工作台窗口仅消费共享服务。
-- 工作台页面：`cockpit/workbench.py`、`ui_trade.py`、`ui_ai.py`、`ui_settings.py`。
-- 图表分层：`chart.py` 管交互，`chart_render.py` 管绘制，`chart_state.py` 管持久化与撤销，`chart_feed.py` 管历史和增量数据，`chart_panel.py` / `chart_dialogs.py` 管工具栏和编辑界面。
-- 交易与记录：`domain.py`、`trading.py`、`history.py`、`journal.py`；数据库与凭据分别在 `store.py`、`secrets.py`。
-- 主题与图标优先复用 `theme.py`、`icons.py`、`cockpit/ui_common.py`，避免重复实现一套控件风格。
+项目面向 Windows 10/11，使用 Python 3.13、PyQt6、SQLite 和 uv。版本及依赖源见 `pyproject.toml`，锁定结果见 `uv.lock`。
 
-## 必须保留的产品行为
+启动链路为 `coinpilot-ai.py` → `coinpilot_ai/application/bootstrap.py`。以下路径均相对于 `coinpilot_ai/`：
 
-### 迷你窗口、托盘和单实例
+| 模块 | 职责与主要入口 |
+| --- | --- |
+| `application/` | `bootstrap.py` 管理 Qt 生命周期；`service.py` 编排共享业务服务 |
+| `core/` | `config.py` 配置兼容；`store.py` SQLite；`credentials.py` Windows 凭据；`paths.py` 资源定位；`version.py` 版本 |
+| `desktop/` | `widget.py` 迷你窗口；`controller.py` 托盘及工作台生命周期；快捷键、单实例及开机启动 |
+| `workbench/` | `window.py` 页面组装；`workspace.py` 停靠布局；`profiles.py` 工作区快照；`settings.py` 设置 |
+| `market/` | 报价、WebSocket、K 线与缓存、指标、盘口及衍生品数据 |
+| `charts/` | `canvas.py` 交互；`render.py` 绘制；`state.py` 状态；`multi.py` 多图；面板与属性对话框 |
+| `integrations/` | `okx.py` API 客户端；`transport.py` 异步请求、超时与取消 |
+| `trading/` | `models.py` 订单规则；`service.py` 提交；`paper.py` 模拟账户；`matching.py` 撮合；风险、提醒及历史同步 |
+| `research/` | 回放会话、指标策略回测、市场扫描及对应页面 |
+| `review/` | 交易归集、统计、资金曲线、AI 协议、提示词与复盘页面 |
+| `ui/` | 共享主题、字体、图标及控件 |
+| `updates/` | 发行版检查、下载校验、更新界面及安装交接 |
 
-1. 默认启动仍显示迷你窗口，保留 28 个逻辑像素高度、币种图标和价格、轮播、置顶、透明度、单击刷新、长按拖动、位置保存、`Alt+Z`、代理和开机启动。
-2. 迷你窗口设置使用草稿，保存后生效；取消不应用修改。隐藏／恢复时保留设置草稿。
-3. **磁吸是图表绘图锚点吸附 K 线最高价／最低价，不是桌面窗口贴边。** 不重新引入屏幕磁吸作为该需求的实现。
-4. 关闭工作台只隐藏，隐藏迷你窗口不停止后台服务；只有明确退出才关闭所有服务。休眠和退出期间不承诺监控。
-5. 同一 Windows 用户的日常源码与 EXE 共用单实例锁。重复启动只唤回已有界面，不重复初始化网络、凭据读取、数据库或全局快捷键。
-6. 只有持锁实例可以清理崩溃遗留的 IPC 端点。内部 `--quit-after` 的测试隔离不能变成普通启动绕过单实例的入口。
-7. 退出时显式关闭网络、托盘、窗口和服务，在 `QApplication` 仍存在时处理延迟销毁；调整销毁顺序后验证源码和冻结 EXE，避免原生退出崩溃。
+测试按功能放在 `tests/<模块>/`，跨模块用例在 `tests/integration/`。开发脚本位于 `scripts/`，Windows 构建文件位于 `packaging/windows/`。不要重新引入旧的 `cockpit/`、根目录构建配置或 `tools/` 路径。
 
-### 图表与行情
+## 实现约定
 
-- 迷你窗口可以使用多个报价源，工作台交易、图表和提醒统一使用 OKX。保留来源标记，不能把其他交易所价格当作 OKX 交易依据。
-- 正常行情与账户请求使用 Qt 异步机制，复用代理、取消和超时逻辑；不要在交互槽中加入阻塞式网络操作或长时间等待。
-- K 线按合约、周期、时间戳去重合并，历史分页不覆盖已缓存序列；切换币种、周期、环境或代理后，旧回调不得串数据。
-- 显式区分实时、重连、轮询和过期。缺口、断线和休眠恢复后先补齐／建立基线，不用旧数据触发新提醒。
-- 画线保存时间与价格坐标，不能改存屏幕像素；补页、缩放和切换周期不得使原始锚点漂移。
-- 磁吸默认开启，当前距离为 14 个逻辑像素，只吸附可见 K 线高低点；按住 Alt 临时关闭。绘制、预览、单锚点编辑、十字光标和落点标签保持一致；整体移动对象保持形状。
-- 两页共享绘图、EMA 和磁吸设置，按现有作用域保存视口及画线；拖动结束后再持久化，不逐帧写 SQLite。
-- EMA 使用完整已加载序列的收盘价计算，平移视口不能重置计算起点。交易价格线只读，不添加隐式提交或拖动改单路径。
-- 绘制仅处理可见区域。涉及渲染或命中检测的改动，检查已有 5,000 根 K 线、100 个绘图对象的性能用例。
+### 服务、桌面与生命周期
 
-### 账户交易与 AI
+- 页面消费共享服务，避免为每个窗口重复创建网络、账户、数据库或全局快捷键实例。
+- 保留迷你窗口的 28 逻辑像素高度、轮播、置顶、透明度、拖动、位置保存、快捷键、代理及开机启动行为。
+- 设置使用草稿，保存后生效，取消不应用；隐藏与恢复不能丢失未保存草稿。
+- 关闭工作台只隐藏，隐藏迷你窗口不停止服务；明确退出才关闭网络、托盘、窗口和业务服务。
+- 同一 Windows 用户的日常源码与 EXE 共用单实例锁。重复启动只唤回界面，只有持锁实例可清理遗留 IPC 端点。
+- 内部 `--quit-after` 仅用于诊断隔离，不应成为普通启动绕过单实例的方式。
+- 保留 Qt 高 DPI 策略，使用逻辑像素，不重复乘缩放系数。窗口延迟销毁应在 `QApplication` 仍存在时完成。
 
-- 支持一个 OKX 账户的 USDT 本位线性永续及无需 API 的本地模拟盘；本地模拟、OKX 模拟、真实环境与账户记录按作用域隔离，本地模拟不计入真实交易解锁验收。
-- 金额、费用和合约数量计算使用 `Decimal`；区分“合约张数”和币数量，校验交易所精度、最小数量、账户模式、杠杆及数据新鲜度。
-- 所有交易操作保留程序校验和人工确认。AI 只能准备可编辑草稿，提示词、报告或图表事件不能绕过交易确认。
-- 不移除真实交易的模拟验收门槛，不伪造验收记录。自动化测试不使用真实账户资金，也不自动向交易所发送测试订单。
-- 提交前保存唯一客户端订单编号和本地状态。超时或未知结果先查询核实，不自动重发、不生成新编号盲目重试；主订单与止盈止损结果分别记录。
-- 对外部交易、缺失历史、无法归属的费用保持明确标注。盈亏和费用由程序计算，AI 不补造数值或缺失事实。
-- 报告保存数据快照、提示词版本、服务／模型和时间；重新生成追加版本，不能覆盖旧报告。
-- AI 失败、取消或未配置时，不阻塞公开行情、规则、手工交易和记录功能。
+### 行情、指标与图表
 
-### 存储、界面与资源
+- 迷你窗口可使用多个报价源，工作台图表、提醒与交易使用 OKX；保留来源和新鲜度标记。
+- 网络请求使用既有 Qt 异步机制，复用代理、取消与超时处理，不在 UI 槽函数中阻塞等待。
+- 按合约、周期、时间戳去重合并 K 线。切换品种、周期、环境或代理后，旧响应不得污染新状态；历史补页不得覆盖完整缓存。
+- 区分实时、轮询、重连、缺口和过期。断线、休眠恢复时先建立有效基线，不用陈旧数据触发新提醒。
+- 指标计算复用 `market/indicators.py`，保留预热、缺失值和已收盘状态；不能把未知值当作零或满足条件。
+- 绘图锚点保存时间与价格坐标；平移、缩放、补页和周期切换不能使其漂移。拖动结束再持久化，避免逐帧写数据库。
+- 磁吸指绘图锚点吸附可见 K 线高低点，默认开启，按 `Alt` 临时关闭；不能将其解释为桌面窗口贴边。
+- 多图的独立视口、指标与可选同步均须保留；同步操作防止递归回调，工作区切换应恢复相应状态。
+- 渲染与命中检测限制在必要的可见区域。性能改动使用 `scripts/qa/benchmark_charts.py` 检查，不凭目测宣称提升。
 
-- 保持原 JSON 路径、字段兼容、损坏文件备份及原子保存；不因升级覆盖用户配置。
-- 业务数据与图表状态使用现有 SQLite 存储。涉及结构或记录格式变化时考虑已有数据库与历史报告。
-- OKX 和 AI 密钥只通过 Windows Credential Manager 管理；禁止写入普通配置、报告、日志、测试样例、截图或发给 AI 的上下文。不添加明文回退。
-- 测试使用临时配置／数据库、空凭据或模拟传输，不读取或修改默认用户目录下的业务数据。
-- 使用 Qt 逻辑像素与既有高 DPI 策略，不重复乘缩放系数。图表快捷键只在画布有焦点时生效，不拦截表单输入。
-- 使用 `resource_path()` 处理源码与 EXE 的资源路径，新增图标需本地打包。优先使用现有 SVG，保留来源和许可证。
-- 仓库 `LICENSE` 为 GPLv3；Lucide / Feather 图标另有 ISC / MIT 声明。修改说明时核对实际文件，不把图标许可写成整个项目的许可。
+### 交易、模拟与研究
+
+- 仅支持已校验的 USDT 本位线性永续。金额、费用、风险预算和合约数量使用 `Decimal`，明确合约张数与币数量的区别。
+- 保留精度、最小数量、账户模式、杠杆及行情／账户新鲜度检查。所有实际交易操作保留程序校验和人工确认。
+- 提交前保存唯一客户端订单编号及本地状态；超时或结果未知时先查询，不自动重发或更换编号盲目重试。主订单与止盈止损结果分别记录。
+- 不移除真实交易的 OKX 模拟验收门槛，不伪造验收记录。自动化测试不得向真实交易所账户发送测试订单。
+- 本地模拟、OKX 模拟、真实账户及 `replay:` 训练作用域隔离；本地模拟和历史训练不计入真实交易解锁。
+- 模拟和回测复用既有撮合、手续费及保护单规则，明确滑点和同根 K 线触发等假设，不能补造离线成交。
+- 回放只向当前会话暴露游标以前的数据。回测使用已收盘信号和下一根开盘成交，拒绝不完整历史，防止使用未来数据。
+- 扫描保留请求排队和限流，区分数据未知与筛选不满足；不将扫描结果直接接入自动实盘下单。
+
+### AI 与复盘
+
+- AI 仅分析事实或准备可编辑草稿，不能绕过订单确认；当前工作台 AI 占位面板不能被描述成已完成的聊天功能。
+- AI 未配置、失败或取消不能阻塞公开行情、规则、手工交易和记录。
+- 盈亏、费用与统计由程序计算。外部交易、历史缺口及无法归属费用保持标记，不让 AI 补造数值或交易理由。
+- 报告保存快照、提示词版本、服务／模型与时间；重新生成保留历史版本。
+- 传给 AI 的上下文不得包含 API 密钥等凭据，外部内容视为分析数据，不能改变程序交易权限。
+
+### 存储、资源与兼容
+
+- 保持原 JSON 路径与字段兼容、损坏文件备份及原子保存；涉及数据库或记录格式变化时考虑已有用户数据。
+- 保留兼容用的 `CryptoWidget` 标识、单实例协议、凭据命名空间及安装器 AppId，不因展示品牌变化随意重命名。
+- OKX 与 AI 密钥仅通过 Windows Credential Manager 管理，不添加明文回退，不写入日志、配置、数据库报告或测试样例。
+- 测试使用临时配置、数据库、空凭据或模拟传输，不读取或修改默认用户业务数据。
+- 使用 `core/paths.py` 的 `resource_path()` 定位源码和 EXE 资源；新增资源同时核对 PyInstaller 收集规则。
+- 优先复用 `ui/` 的主题、字体、图标及控件。保留本地图标与字体的许可声明。
 
 ## 开发与验证
 
@@ -77,66 +96,64 @@ uv sync --locked --group dev
 uv run --locked --group dev pytest -q
 ```
 
-按改动选择有意义的验证，不为纯文档修改运行网络、真实账户或 EXE 全流程：
+按修改范围先执行相关验证：
 
-| 改动范围 | 验证重点 |
+| 改动范围 | 对应测试／检查 |
 | --- | --- |
-| README、说明文件 | 文件路径、Markdown 链接、命令参数、版本与许可证，`git diff --check` |
-| 配置、迷你窗口、桌面行为 | `tests/test_config.py`、`tests/test_ui.py`、`tests/test_desktop.py`，按需补充快捷键／启动测试 |
-| 图表、磁吸、EMA、历史行情 | `tests/test_charts.py`；固定数据精度、预览与点击一致、撤销、跨页面／周期及重启恢复 |
-| 账户、规则、交易、AI、复盘 | `tests/test_cockpit.py`、`tests/test_cockpit_network.py`；覆盖失败、取消、过期和结果未知的分支 |
-| 控件、布局、图标 | 按需运行 `tools/verify_ui.py`、`tools/verify_workbench.py`，实际查看输出截图；无需执行五档 DPI 测试 |
-| 生命周期、依赖、资源或发布产物 | 构建 EXE 后运行 `tools/smoke_test.py`，检查启停及重复启动 |
+| 文档 | 链接、文件路径、命令参数、版本、功能边界及 `git diff --check` |
+| 配置与资源路径 | `tests/core/` |
+| 桌面、生命周期、快捷键 | `tests/desktop/`，必要时构建并执行启动检查 |
+| 行情、指标、缓存与图表 | `tests/market/`、`tests/charts/`、相关 `tests/integration/` 用例 |
+| 交易与模拟盘 | `tests/trading/`、`tests/integration/test_cockpit.py`、`tests/integration/test_cockpit_network.py` |
+| 回放、回测与扫描 | `tests/research/`、`tests/integration/test_replay_cache.py`、`tests/integration/test_indicators_risk.py` |
+| 布局、工作区与共用样式 | `tests/workbench/`、`tests/ui/`，按需运行界面验证 |
+| 自动更新 | `tests/updates/` 与离线更新界面验证 |
 
-针对性验证通过后，业务代码交付前运行完整测试集；已有结果无变化时不反复运行相同检查。只写实际执行结果，明确未验证的账户或外部服务。
+业务代码交付前运行完整测试集；已通过且没有新改动或疑点时不重复检查。纯文档修改不要求运行应用、联网或打包。
 
-### 离线界面检查
-
-```powershell
-uv run --locked python tools/verify_ui.py
-uv run --locked python tools/verify_workbench.py
-```
-
-离线界面检查按需执行，无需覆盖五档 DPI，也无需使用 `--all`。检查时使用临时数据和空凭据。截图与报告位于 `artifacts/`，需要时通过工作台检查脚本的 `--output` 参数另存。
-
-### 公开接口检查
+离线界面检查按需选择，不要求每次覆盖所有 DPI：
 
 ```powershell
-uv run --locked python tools/check_network.py
-uv run --locked python tools/check_streams.py --direct
-uv run --locked python tools/check_workbench.py --direct
+uv run --locked python scripts/qa/verify_ui.py
+uv run --locked python scripts/qa/verify_workbench.py
+uv run --locked python scripts/qa/verify_paper.py
+uv run --locked python scripts/qa/verify_updates.py
 ```
 
-这些脚本会联网，只检查公开行情／图标服务；按涉及的网络改动选用。不要把公开接口联通、模拟响应测试或示例截图描述成私有账户、真实交易或用户 AI 服务已经验证。
+输出位于 `artifacts/`。界面改动应实际查看截图，不能仅凭脚本退出码判断布局正确。
 
-### 安装包与启动检查
+公开接口检查脚本位于 `scripts/checks/`，会联网，只按涉及的网络改动选用。其结果不代表私有账户、真实交易或用户 AI 服务已验收。
+
+## 构建与发行
 
 ```powershell
-.\tools\build_installer.ps1 -IsccPath "D:\Inno Setup 6\ISCC.exe"
-uv run --locked python tools/smoke_test.py
-uv run --locked python tools/smoke_test.py --exe "$env:LOCALAPPDATA\Programs\CoinPilotAI\coinpilot-ai.exe"
+.\scripts\release\build_installer.ps1 -IsccPath "D:\Inno Setup 6\ISCC.exe"
+
+# 已存在目录版 EXE 时验证源码与 EXE
+uv run --locked python scripts/qa/smoke_test.py
 ```
 
-保留构建中的 Windows DLL 隔离、中文翻译、PerMonitorV2 声明与资源收集。启动检查使用临时配置，但应用启动可能访问公开行情。
-
-构建需要 Inno Setup 6.5+ 的 6.x 编译器；版本从 `pyproject.toml` 读取。只发布 `dist/installer/CoinPilotAI-Setup-<版本>-x64.exe`，目录中间产物为 `dist/coinpilot-ai/`，不得只复制其中的 EXE。安装范围是当前用户，默认路径 `%LOCALAPPDATA%\Programs\CoinPilotAI`；保持固定 AppId 和原用户数据路径。安装、升级、卸载验证须在独立 Windows 用户或虚拟机中完成，见 [安装验收清单](installer/VALIDATION.md)。仅构建及 smoke 通过不能写成安装生命周期已验收。
-
-依赖变更通过 uv 操作，并同步 `pyproject.toml` 与 `uv.lock`。没有产物交付要求且仅修改文档时，不调整版本或重新打包。
+- 构建要求 64 位 Python 3.13、uv 与 Inno Setup 6.5+ 的 6.x 编译器，版本来源为 `pyproject.toml`。
+- PyInstaller 配置为 `packaging/windows/coinpilot-ai.spec`。保留 DLL 隔离、中文翻译、字体、图标、许可证及 PerMonitorV2 清单。
+- 对外发布 `dist/installer/CoinPilotAI-Setup-<版本>-x64.exe` 及同名 `.sha256` 文件；`dist/coinpilot-ai/` 为整体使用的目录版，不发布孤立 EXE。
+- 启动检查需要已有 EXE，可能访问公开行情；安装、升级与卸载须按 [安装验收清单](packaging/windows/installer/VALIDATION.md) 在独立 Windows 用户或虚拟机验证。
+- 依赖变更通过 uv 完成，并同步 `pyproject.toml` 与 `uv.lock`。新增运行、测试、构建依赖分别使用 `uv add`、`uv add --group dev`、`uv add --group build`。
+- 只报告实际完成的验证，不将构建成功等同于完整安装验收。
 
 ## Git 提交规范
 
-提交记录必须使用中文、分条描述实际变更，每一条仅允许以下类型：
+提交记录必须使用中文、分条描述，每条明确标注变更类型，仅允许：
 
 - **新增**：新增功能、文件、配置或逻辑。
 - **修改**：修改、优化、重构或修复现有内容。
 - **删除**：删除功能、文件、配置或无用代码。
 
-禁止使用“更新代码”“修改内容”“优化项目”等笼统说明。格式示例：
+每条说明应简洁、具体，禁止使用“更新代码”“修改内容”“优化项目”等笼统描述。示例：
 
 ```text
-- 新增：图表锚点吸附 K 线高低点功能
-- 修改：完善工作台使用说明与启动命令
-- 删除：误加的桌面窗口边缘磁吸逻辑
+- 新增：历史回放训练进度保存功能
+- 修改：修正多图切换后的视口恢复逻辑
+- 删除：迁移后不再使用的旧构建入口
 ```
 
-不要把 `.venv/`、`build/`、`dist/`、`artifacts/`、用户配置、凭据或业务数据库纳入提交。项目当前忽略 `docs/`；新增文档图片链接前，确认目标文件存在且会随仓库分发，不能只引用本机生成的截图。
+仅暂存本次任务涉及的文件，不夹带已有用户变更。不提交 `.venv/`、`build/`、`dist/`、`artifacts/`、凭据或用户数据库。新增文档图片前确认文件存在且会随仓库分发；忽略规则以实际 `.gitignore` 为准。
