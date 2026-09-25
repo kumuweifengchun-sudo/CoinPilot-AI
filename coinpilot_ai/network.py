@@ -71,7 +71,8 @@ class MarketClient(QObject):
             return
         request = QNetworkRequest(QUrl(url))
         request.setTransferTimeout(3000 if kind == "price" else 8000)
-        request.setRawHeader(b"User-Agent", b"CoinPilotAI/2.0")
+        from .version import VERSION
+        request.setRawHeader(b"User-Agent", f"CoinPilotAI/{VERSION}".encode("ascii"))
         reply = self.manager.get(request)
         self.pending[key] = reply
         generation = self.generations[kind]

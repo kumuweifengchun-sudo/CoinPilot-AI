@@ -22,6 +22,7 @@ DEFAULT_CONFIG = {
     "hide_hotkey": "Alt+Z",
     "price_source": "auto",
     "ui_theme": "okx_dark",
+    "auto_check_updates": True,
     "proxy_enabled": True, "proxy_type": "socks5", "proxy_host": "127.0.0.1", "proxy_port": 7897,
 }
 PROXY_LABELS = {"socks5": "SOCKS5", "http": "HTTP"}
@@ -103,7 +104,7 @@ def validate_config(raw):
                 from .theme import get_theme
                 if not isinstance(value, str) or get_theme(value).id != value:
                     raise ValueError()
-            elif key in ("cycle_enabled", "mini_mode", "proxy_enabled"):
+            elif key in ("cycle_enabled", "mini_mode", "proxy_enabled", "auto_check_updates"):
                 if type(value) is not bool:
                     raise ValueError()
             else:

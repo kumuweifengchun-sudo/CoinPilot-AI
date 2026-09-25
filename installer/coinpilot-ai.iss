@@ -16,6 +16,8 @@
 AppId={{98E845CA-82E2-4A5E-9A90-CBB7CD3F8CB8}
 AppName=CoinPilot AI
 AppVersion={#AppVersion}
+VersionInfoVersion={#AppVersion}
+VersionInfoProductVersion={#AppVersion}
 AppPublisher=CoinPilot AI
 DefaultDirName={localappdata}\Programs\CoinPilotAI
 DefaultGroupName=CoinPilot AI
@@ -29,7 +31,7 @@ UsePreviousAppDir=yes
 UsePreviousTasks=yes
 UninstallDisplayName=CoinPilot AI
 UninstallDisplayIcon={app}\coinpilot-ai.exe
-SetupIconFile=..\coinpilot-ai.ico
+SetupIconFile=..\coinpilot_ai\assets\app_icon\app.ico
 WizardStyle=modern
 DisableWelcomePage=no
 LicenseFile=..\LICENSE

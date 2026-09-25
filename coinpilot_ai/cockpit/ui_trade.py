@@ -2,20 +2,21 @@
 import time
 import uuid
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGridLayout, QHBoxLayout,
-    QInputDialog, QLabel, QLineEdit, QScrollArea, QSplitter, QTabWidget, QVBoxLayout, QWidget)
+from PyQt6.QtCore import Qt, QObject, pyqtSignal
+from PyQt6.QtWidgets import (QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout,
+    QInputDialog, QLabel, QLineEdit, QScrollArea, QVBoxLayout, QWidget)
 
-from .chart_panel import ChartPanel, SavedSplitter
 from .domain import OrderDraft, aligned, instrument_id, number
-from .ui_ai import AiPanel
-from .ui_common import button, confirm, fill_table, selected_id, table, timestamp
+from .ui_common import AccountTabs, button, confirm, fill_table, selected_id, table, timestamp
 from .ui_settings import combo, select_data
 
 STATES = {"submitting": "提交中", "unknown": "结果待确认", "live": "挂单中", "partially_filled": "部分成交", "filled": "已成交", "canceled": "已撤销", "failed": "失败", "accepted": "已接受", "confirmed": "已核实"}
 
 
-class TradePage(QWidget):
+class TradeController(QObject):
+    """共享交易操作；表单与账户表格由工作区分别托管。"""
+    form_requested = pyqtSignal()
+
     def __init__(self, service, parent=None):
         super().__init__(parent)
         self.service = service
@@ -23,42 +24,35 @@ class TradePage(QWidget):
         self.leverage_pending = set()
         self.action_busy = False
         self.last_submission_id = None
-        root = QVBoxLayout(self)
-        root.setContentsMargins(3, 3, 3, 3)
-        splitter = SavedSplitter(Qt.Orientation.Horizontal, service, "trade_horizontal")
-        left = QWidget()
-        layout = QVBoxLayout(left)
-        layout.setContentsMargins(0, 0, 0, 0)
-        self.vertical = SavedSplitter(Qt.Orientation.Vertical, service, "trade_vertical")
-        self.chart = ChartPanel(service, trading=True)
-        self.vertical.addWidget(self.chart)
         self.bottom = QWidget()
         bottom_layout = QVBoxLayout(self.bottom)
         bottom_layout.setContentsMargins(0, 0, 0, 0)
         bottom_layout.setSpacing(2)
-        self.tabs = QTabWidget()
-        self.position_table = table(["合约", "方向 / 模式", "持仓 / 可平(张)", "开仓均价", "未实现盈亏", "杠杆"])
-        self.order_table = table(["合约", "买卖 / 类型", "数量(张)", "价格", "状态"])
-        self.algo_table = table(["合约", "买卖", "张数", "止损", "止盈", "状态"])
-        self.local_table = table(["时间", "合约", "开平 / 方向", "状态", "止盈止损 / 结果"])
-        self.fill_table = table(["时间", "合约", "买卖", "张数", "成交价", "费用"])
+        self.tabs = AccountTabs()
+        bottom_layout.addWidget(self.tabs.selector)
+        self.position_table = table(["合约", "方向 / 模式", "持仓 / 可平(张)", "开仓均价", "未实现盈亏", "杠杆"], readable=True)
+        self.order_table = table(["合约", "买卖 / 类型", "数量(张)", "价格", "状态"], readable=True)
+        self.algo_table = table(["合约", "买卖", "张数", "止损", "止盈", "状态"], readable=True)
+        self.local_table = table(["时间", "合约", "开平 / 方向", "状态", "止盈止损 / 结果"], readable=True)
+        self.fill_table = table(["时间", "合约", "买卖", "张数", "成交价", "费用"], readable=True)
         for title, widget in (("持仓", self.position_table), ("挂单", self.order_table), ("止盈止损", self.algo_table), ("本机提交", self.local_table), ("成交", self.fill_table)):
             self.tabs.addTab(widget, title)
         bottom_layout.addWidget(self.tabs, 1)
-        actions = QGridLayout()
-        actions.setSpacing(2)
-        actions.addWidget(button("载入平仓", self.load_position), 0, 0)
-        actions.addWidget(button("止盈止损", self.protect_position), 0, 1)
-        actions.addWidget(button("撤销订单", self.cancel_order), 0, 2)
-        actions.addWidget(button("查询结果", lambda: (self.service.trading.recover(), self.service.recover_actions())), 0, 3)
+        self.action_buttons = [button("载入平仓", self.load_position),
+            button("止盈止损", self.protect_position), button("撤销订单", self.cancel_order),
+            button("查询结果", lambda: (self.service.trading.recover(), self.service.recover_actions()))]
+        actions = QHBoxLayout()
+        for btn in self.action_buttons:
+            actions.addWidget(btn)
+        actions.addStretch()
         bottom_layout.addLayout(actions)
-        self.vertical.addWidget(self.bottom)
-        self.vertical.restore([420, 190])
-        layout.addWidget(self.vertical, 1)
-        self.ai_panel = AiPanel(service, "order", self.ai_context)
-        self.ai_panel.draft_ready.connect(self.load_draft)
-        layout.addWidget(self.ai_panel)
-        splitter.addWidget(left)
+        self.operation_feedback = QLabel()
+        self.operation_feedback.setWordWrap(True)
+        self.operation_feedback.setMaximumHeight(36)
+        self.operation_feedback.hide()
+        bottom_layout.addWidget(self.operation_feedback)
+        self.tabs.currentChanged.connect(self.update_actions)
+        self.update_actions()
         sidebar = QWidget()
         sidebar.setObjectName("sidePanel")
         side_layout = QVBoxLayout(sidebar)
@@ -67,6 +61,11 @@ class TradePage(QWidget):
         heading = QLabel("委托下单")
         heading.setObjectName("sectionTitle")
         side_layout.addWidget(heading)
+        self.paper_button = button('开启本地模拟（免 API）', lambda: service.change_account('paper'))
+        side_layout.addWidget(self.paper_button)
+        self.paper_hint = QLabel('虚拟资金 · 按最新价模拟成交 · 手续费 0.05%')
+        self.paper_hint.setWordWrap(True)
+        side_layout.addWidget(self.paper_hint)
         form_widget = QWidget()
         form_widget.setObjectName("tradeFormContent")
         form_layout = QVBoxLayout(form_widget)
@@ -107,37 +106,19 @@ class TradePage(QWidget):
         side_layout.addWidget(self.submit_button)
         side_layout.addWidget(self.feedback)
         sidebar.setMinimumWidth(300)
-        sidebar.setMaximumWidth(380)
         self.sidebar = sidebar
-        splitter.addWidget(sidebar)
-        splitter.setStretchFactor(0, 1)
-        splitter.restore([850, 320])
-        self.chart.maximize_requested.connect(self.maximize_chart)
-        self.chart.bottom_requested.connect(lambda: self.toggle_area("bottom"))
-        self.chart.sidebar_requested.connect(lambda: self.toggle_area("sidebar"))
-        visibility = service.store.get("chart_layout", "trade_visibility", {"bottom": True, "sidebar": True})
-        self.bottom.setVisible(visibility["bottom"])
-        self.sidebar.setVisible(visibility["sidebar"])
-        root.addWidget(splitter)
+        self.bottom.setMinimumSize(300, 190)
 
-    def maximize_chart(self, maximized):
-        if maximized:
-            self.chart_visibility = (not self.bottom.isHidden(), not self.sidebar.isHidden(), not self.ai_panel.isHidden())
-            self.bottom.hide()
-            self.sidebar.hide()
-            self.ai_panel.hide()
-        else:
-            bottom, sidebar, ai = self.chart_visibility
-            self.bottom.setVisible(bottom)
-            self.sidebar.setVisible(sidebar)
-            self.ai_panel.setVisible(ai)
+    def set_feedback(self, text):
+        self.feedback.setText(text)
+        self.operation_feedback.setText(text)
+        self.operation_feedback.setToolTip(text)
+        self.operation_feedback.setVisible(bool(text))
 
-    def toggle_area(self, area):
-        if self.chart.maximized:
-            self.chart.maximize()
-        widget = self.bottom if area == "bottom" else self.sidebar
-        widget.setVisible(widget.isHidden())
-        self.service.store.put("chart_layout", "trade_visibility", {"bottom": not self.bottom.isHidden(), "sidebar": not self.sidebar.isHidden()})
+    def update_actions(self, *_):
+        index = self.tabs.currentIndex()
+        for btn, visible in zip(self.action_buttons, (index == 0, index == 0, index in (1, 2), index == 3)):
+            btn.setVisible(visible)
 
     def draft(self):
         action, direction = self.action.currentData().split(":")
@@ -157,9 +138,10 @@ class TradePage(QWidget):
             self.inst.setText(self.service.selected)
             self.refresh_leverage()
         except ValueError as exc:
-            self.feedback.setText(str(exc))
+            self.set_feedback(str(exc))
 
     def load_draft(self, draft):
+        self.form_requested.emit()
         self.source = draft.source
         self.inst.setText(draft.instrument)
         select_data(self.action, draft.action + ":" + draft.direction)
@@ -168,7 +150,7 @@ class TradePage(QWidget):
         for widget, value in ((self.size, draft.size), (self.price, draft.price), (self.sl, draft.stop_loss), (self.tp, draft.take_profit), (self.reason, draft.reason), (self.tags, draft.tags)):
             widget.setText(value)
         self.select_instrument()
-        self.feedback.setText("草稿已载入，请检查合约张数、价格与方向，再确认提交。")
+        self.set_feedback("草稿已载入，请检查合约张数、价格与方向，再确认提交。")
 
     def submit(self):
         token = None
@@ -179,22 +161,21 @@ class TradePage(QWidget):
             if not lever:
                 raise ValueError("尚未获取当前保证金模式的实际杠杆，请等待查询完成")
             context = self.ai_context()
-            if self.ai_panel.last_record:
-                context["analysis"] = self.ai_panel.last_record
             token, payload = self.service.trading.prepare(draft, context)
-            env = "模拟交易" if self.service.environment == "demo" else "真实交易"
+            env = self.service.environment_label
             summary = f"{env} · {draft.instrument}\n{self.action.currentText()} / {self.margin.currentText()} / {self.order_type.currentText()}\n数量：{draft.size} 张\n价格：{draft.price if draft.order_type == 'limit' else '按市场成交'}\n实际杠杆：{lever} 倍\n止损：{draft.stop_loss or '未设置'}  止盈：{draft.take_profit or '未设置'}"
-            if not confirm(self, "确认提交订单", summary):
+            if not confirm(self.sidebar, "确认提交订单", summary):
                 self.service.trading.prepared.pop(token, None)
                 return
             client_id = self.service.trading.submit(token, confirmed=True)
             self.last_submission_id = client_id
-            self.feedback.setText("已提交，正在等待交易所确认：" + client_id)
+            self.set_feedback(("本地模拟订单已提交：" if self.service.environment == 'paper' else "已提交，正在等待交易所确认：") + client_id)
+            self.refresh('orders')
             self.source = "manual"
         except (ValueError, OSError) as exc:
             if token:
                 self.service.trading.prepared.pop(token, None)
-            self.feedback.setText(str(exc))
+            self.set_feedback(str(exc))
 
     def selected_position(self):
         key = selected_id(self.position_table)
@@ -208,9 +189,9 @@ class TradePage(QWidget):
             p = self.selected_position()
             side = p["posSide"] if p["posSide"] != "net" else "long" if number(p["pos"]) > 0 else "short"
             self.load_draft(OrderDraft(p["instId"], action="close", direction=side, size=str(abs(number(p.get("availPos") or p["pos"]))), margin=p["mgnMode"]))
-            self.feedback.setText("已填入全部可平张数；可修改为部分平仓，再检查并确认。")
+            self.set_feedback("已填入全部可平张数；可修改为部分平仓，再检查并确认。")
         except ValueError as exc:
-            self.feedback.setText(str(exc))
+            self.set_feedback(str(exc))
 
     def current_leverage(self):
         key = (self.inst.text(), self.margin.currentData())
@@ -225,7 +206,7 @@ class TradePage(QWidget):
             inst = instrument_id(self.inst.text())
         except ValueError:
             return
-        if not self.service.api.credentials:
+        if not self.service.account_connected:
             self.leverage.setText("尚未连接账户")
             return
         key = (inst, self.margin.currentData())
@@ -249,18 +230,19 @@ class TradePage(QWidget):
 
     def change_leverage(self):
         self.refresh_leverage()
-        value, accepted = QInputDialog.getInt(self, "调整交易所杠杆", "新的杠杆倍数（交易所最终校验范围）", int(number(self.current_leverage() or "1")), 1, 125)
+        local = self.service.environment == 'paper'
+        value, accepted = QInputDialog.getInt(self.sidebar, "调整模拟杠杆" if local else "调整交易所杠杆", "新的杠杆倍数", int(number(self.current_leverage() or "1")), 1, 125)
         if not accepted:
             return
         try:
             payload = {"instId": instrument_id(self.inst.text()), "mgnMode": self.margin.currentData(), "lever": str(value)}
             if self.service.account.get("posMode") == "long_short_mode" and payload["mgnMode"] == "isolated":
                 payload["posSide"] = self.action.currentData().split(":")[1]
-            if confirm(self, "确认修改杠杆", f"{payload['instId']} / {self.margin.currentText()}\n将交易所杠杆修改为 {value} 倍。"):
+            if confirm(self.sidebar, "确认修改杠杆", f"{self.service.environment_label} · {payload['instId']} / {self.margin.currentText()}\n将杠杆修改为 {value} 倍。"):
                 self.perform("/api/v5/account/set-leverage", payload)
                 self.service.leverages.clear()
         except ValueError as exc:
-            self.feedback.setText(str(exc))
+            self.set_feedback(str(exc))
 
     def perform(self, path, payload):
         if self.action_busy:
@@ -268,7 +250,7 @@ class TradePage(QWidget):
         self.action_busy = True
         def done(rows, error):
             self.action_busy = False
-            self.feedback.setText((str(error) + ("；结果待确认，请刷新交易所状态，不要重复提交。" if error.uncertain else "")) if error else "交易所已接受操作，等待状态同步。")
+            self.set_feedback((str(error) + ("；结果待确认，请刷新状态，不要重复提交。" if error.uncertain else "")) if error else ("本地模拟操作已完成。" if self.service.environment == 'paper' else "交易所已接受操作，等待状态同步。"))
             self.service.leverages.clear()
         try:
             self.service.trade_action(path, payload, done)
@@ -286,17 +268,17 @@ class TradePage(QWidget):
             row = next((r for r in rows if r.get(key) == identity), None)
             if not row:
                 raise ValueError("请在挂单或止盈止损页选择要撤销的订单")
-            if confirm(self, "确认撤销订单", f"{row['instId']}\n订单 {identity}\n" + ("将撤销这笔止盈止损保护。" if is_algo else "撤单结果以交易所为准。")):
+            if confirm(self.sidebar, "确认撤销订单", f"{self.service.environment_label} · {row['instId']}\n订单 {identity}\n" + ("将撤销这笔止盈止损保护。" if is_algo else "仅撤销本地模拟挂单。" if self.service.environment == 'paper' else "撤单结果以交易所为准。")):
                 payload = {"instId": row["instId"], key: identity}
                 self.perform("/api/v5/trade/cancel-algos" if is_algo else "/api/v5/trade/cancel-order", [payload] if is_algo else payload)
         except ValueError as exc:
-            self.feedback.setText(str(exc))
+            self.set_feedback(str(exc))
 
     def protect_position(self):
         try:
             position = self.selected_position()
-            dialog = QDialog(self)
-            dialog.setWindowTitle("为所选仓位设置止盈止损")
+            dialog = QDialog(self.bottom)
+            dialog.setWindowTitle(self.service.environment_label + " · 设置止盈止损")
             layout = QVBoxLayout(dialog)
             form = QFormLayout()
             size = QLineEdit(str(abs(number(position.get("availPos") or position["pos"]))))
@@ -331,37 +313,44 @@ class TradePage(QWidget):
                     if (above and level <= current) or (not above and level >= current):
                         raise ValueError("止盈止损触发方向与当前价格不匹配")
                     payload.update({prefix+"TriggerPx": str(level), prefix+"OrdPx": "-1", prefix+"TriggerPxType": "last"})
-            if confirm(self, "确认设置交易所止盈止损", f"{inst} · {size.text()} 张\n止损 {sl.text() or '无'} / 止盈 {tp.text() or '无'}"):
+            if confirm(self.sidebar, "确认设置止盈止损", f"{self.service.environment_label} · {inst} · {size.text()} 张\n止损 {sl.text() or '无'} / 止盈 {tp.text() or '无'}"):
                 self.perform("/api/v5/trade/order-algo", payload)
         except (ValueError, KeyError) as exc:
-            self.feedback.setText(str(exc))
+            self.set_feedback(str(exc))
 
     def refresh(self, kind):
         s = self.service
+        self.paper_button.setVisible(s.environment == 'demo' and not s.account_connected)
+        self.paper_hint.setVisible(s.environment == 'paper')
         if kind == "environment":
             self.action_busy = False
             self.last_submission_id = None
             self.leverage_pending.clear()
             self.source = "manual"
+            self.feedback.setText('本地虚拟资金，所有订单仍需确认。' if s.environment == 'paper' else '所有订单均需确认。止盈止损以交易所实际生成状态为准。')
             for edit in (self.size, self.price, self.sl, self.tp, self.reason, self.tags):
                 edit.clear()
         if kind == "selection":
             self.inst.setText(s.selected)
             self.refresh_leverage()
         if kind in ("candles", "selection", "market"):
-            self.chart.set_data(s.candles.get((s.selected, s.bar), []), s.selected + " / " + s.bar)
             spec = s.specs.get(s.selected, {})
             self.spec_label.setText(f"每张 {spec.get('ctVal', '—')} {spec.get('ctValCcy', '')}\n最小张数 {spec.get('minSz', '—')} · 数量步长 {spec.get('lotSz', '—')}\n价格步长 {spec.get('tickSz', '—')}")
         if kind in ("account", "environment"):
             self.refresh_leverage()
-            fill_table(self.position_table, [(p.get("posId"), [p["instId"], p["posSide"]+" / "+p["mgnMode"], p["pos"]+" / "+(p.get("availPos") or p["pos"]), p.get("avgPx"), p.get("upl"), p.get("lever")]) for p in s.positions])
-            fill_table(self.order_table, [(o["ordId"], [o["instId"], o.get("side", "")+" / "+o.get("ordType", ""), o.get("sz"), o.get("px"), STATES.get(o.get("state"), o.get("state"))]) for o in s.pending_orders])
+        if kind in ("account", "orders", "environment") and self.bottom.isVisible():
+            fill_table(self.position_table, [(p.get("posId"), [p["instId"],
+                ('多' if p['posSide'] == 'long' or p['posSide'] == 'net' and number(p['pos']) > 0 else '空') + ' / ' + {'cross': '全仓', 'isolated': '逐仓'}.get(p['mgnMode'], p['mgnMode']),
+                str(abs(number(p['pos'])))+" / "+(p.get("availPos") or str(abs(number(p['pos'])))), p.get("avgPx"), p.get("upl"), p.get("lever")]) for p in s.positions])
+            fill_table(self.order_table, [(o["ordId"], [o["instId"], {'buy': '买', 'sell': '卖'}.get(o.get('side'), '')+" / "+{'market': '市价', 'limit': '限价'}.get(o.get('ordType'), o.get('ordType', '')), o.get("sz"), o.get("px"), STATES.get(o.get("state"), o.get("state"))]) for o in s.pending_orders])
             fill_table(self.algo_table, [(o["algoId"], [o["instId"], o.get("side"), o.get("sz"), o.get("slTriggerPx"), o.get("tpTriggerPx"), o.get("state")]) for o in s.algos])
         if kind in ("orders", "history", "environment", "account"):
             if self.last_submission_id:
                 recent = s.store.get("local_order", self.last_submission_id, scope=s.scope)
                 if recent:
-                    self.feedback.setText(STATES.get(recent["status"], recent["status"]) + " · " + (recent.get("error") or recent.get("protection", "")))
+                    self.set_feedback(STATES.get(recent["status"], recent["status"]) + " · " + (recent.get("error") or recent.get("protection", "")))
+            if not self.bottom.isVisible():
+                return
             records = [(key, [timestamp(o["time"]), o["draft"]["instrument"], o["draft"]["action"]+" / "+o["draft"]["direction"], STATES.get(o["status"], o["status"]), o.get("error") or o.get("protection", "")]) for key, o in s.store.list("local_order", s.scope, limit=100)]
             names = {"order-algo": "设置止盈止损", "cancel-order": "撤单", "cancel-algos": "撤销保护", "set-leverage": "修改杠杆"}
             for key, action in s.store.list("action", s.scope, limit=100):

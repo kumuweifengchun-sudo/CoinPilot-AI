@@ -261,7 +261,7 @@ def test_workbench_closing_keeps_service_and_mini_compatibility(service, app):
     window = Workbench(service, lambda: None)
     window.show()
     app.processEvents()
-    assert window.pages.count() == 4
+    assert window.pages.count() == 3
     assert service.settings["watchlist"] == ["BTC-USDT-SWAP", "ETH-USDT-SWAP", "SOL-USDT-SWAP"]
     window.close()
     assert not window.isVisible() and not service.closed

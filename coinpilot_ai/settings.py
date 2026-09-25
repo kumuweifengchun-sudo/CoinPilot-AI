@@ -45,8 +45,11 @@ class Preview(QWidget):
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, owner):
-        super().__init__(owner)
+    def __init__(self, owner, parent=None, *, embedded=False):
+        super().__init__(parent or owner)
+        self.embedded = embedded
+        if embedded:
+            self.setWindowFlags(Qt.WindowType.Widget)
         self.owner = owner
         self.draft = owner.config.copy()
         self.symbol_edits = []
@@ -55,7 +58,7 @@ class SettingsDialog(QDialog):
         self._card_icons = []
         self._full_text_size = self.draft["text_size"]
         self.setWindowTitle("CoinPilot AI · 迷你窗口设置")
-        self.setModal(True)
+        self.setModal(not embedded)
         self.setMinimumSize(320, 320)
         self._build_ui()
         self._load_startup()
@@ -203,6 +206,20 @@ class SettingsDialog(QDialog):
         shortcut_row.addWidget(self.hotkey_edit)
         behavior.addLayout(shortcut_row)
 
+        self.auto_update_check = QCheckBox("自动检查正式版更新")
+        self.auto_update_check.setChecked(self.draft.get("auto_check_updates", True))
+        self.auto_update_check.setToolTip("安装版启动后检查，之后每 6 小时检查；下载与退出安装由你决定")
+        updates = self._card(body, "软件更新", toggle=self.auto_update_check)
+        from .version import VERSION
+        update_row = QHBoxLayout()
+        update_row.addWidget(QLabel(f"当前版本 {VERSION}"))
+        update_row.addStretch()
+        self.check_update_button = QPushButton("检查更新")
+        self.check_update_button.setAutoDefault(False)
+        self.check_update_button.clicked.connect(self.owner.update_requested.emit)
+        update_row.addWidget(self.check_update_button)
+        updates.addLayout(update_row)
+
         self.proxy_check = QCheckBox("启用代理")
         self.proxy_check.setChecked(self.draft.get("proxy_enabled", True))
         proxy_card = self._card(body, "网络代理", toggle=self.proxy_check)
@@ -227,7 +244,7 @@ class SettingsDialog(QDialog):
             self.proxy_check.toggled.connect(control.setEnabled)
             proxy_row.addWidget(control, 1 if control is self.proxy_host_edit else 0)
         proxy_card.addLayout(proxy_row)
-        hint = QLabel("行情与图标均使用此代理，保存后生效；关闭后直连。")
+        hint = QLabel("行情、图标和软件更新使用此代理，保存后生效；关闭后直连。")
         hint.setObjectName("muted")
         hint.setWordWrap(True)
         proxy_card.addWidget(hint)
@@ -249,12 +266,12 @@ class SettingsDialog(QDialog):
         self.refresh_button.setObjectName("quiet")
         self.refresh_button.setToolTip("立即清理已保存币种的图标缓存并重新下载")
         self.refresh_button.clicked.connect(self._refresh_icons)
-        cancel = QPushButton("取消")
+        cancel = QPushButton("撤销未保存修改" if self.embedded else "取消")
         cancel.clicked.connect(self.reject)
         save = QPushButton("保存设置")
         set_button_icon(save, "check", size=14, color="@accent_text")
         save.setObjectName("primary")
-        save.setDefault(True)
+        save.setDefault(not self.embedded)
         save.clicked.connect(self._save)
         for button in (self.refresh_button, cancel, save):
             button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -349,6 +366,7 @@ class SettingsDialog(QDialog):
         candidate["cycle_enabled"] = self.cycle_check.isChecked()
         candidate["mini_mode"] = self.mini_check.isChecked()
         candidate["price_source"] = self.source_combo.currentData()
+        candidate["auto_check_updates"] = self.auto_update_check.isChecked()
         try:
             candidate["proxy_host"] = normalize_proxy_host(self.proxy_host_edit.text())
         except ValueError as exc:
@@ -372,6 +390,39 @@ class SettingsDialog(QDialog):
             return
         self.owner.apply_settings(candidate)
         self.accept()
+
+    def accept(self):
+        if not self.embedded:
+            return super().accept()
+        self.draft = self.owner.config.copy()
+        self._message("设置已保存并生效")
+
+    def reject(self):
+        if not self.embedded:
+            return super().reject()
+        self.draft = self.owner.config.copy()
+        self._full_text_size = self.draft["text_size"]
+        for i, (edit, spin) in enumerate(zip(self.symbol_edits, self.decimal_spins), 1):
+            edit.setText(self.draft[f"symbol{i}"])
+            spin.setValue(self.draft[f"decimals{i}"])
+        self.mini_check.blockSignals(True)
+        self.mini_check.setChecked(self.draft["mini_mode"])
+        self.mini_check.blockSignals(False)
+        for key, number in self.number_inputs.items():
+            number.setValue(round(self.draft[key]*100) if key == "bg_opacity" else self.draft[key])
+        self.number_inputs["text_size"].setEnabled(not self.draft["mini_mode"])
+        self.number_inputs["text_size"].setValue(12 if self.draft["mini_mode"] else self._full_text_size)
+        self.cycle_check.setChecked(self.draft["cycle_enabled"])
+        self.source_combo.setCurrentIndex(self.source_combo.findData(self.draft["price_source"]))
+        self.auto_update_check.setChecked(self.draft.get("auto_check_updates", True))
+        self.proxy_check.setChecked(self.draft["proxy_enabled"])
+        self.proxy_type_combo.setCurrentIndex(self.proxy_type_combo.findData(self.draft["proxy_type"]))
+        self.proxy_host_edit.setText(self.draft["proxy_host"])
+        self.proxy_port_spin.setValue(self.draft["proxy_port"])
+        self.hotkey_edit.setText(self.draft["hide_hotkey"])
+        self._load_startup()
+        self._refresh_preview()
+        self._message("已恢复已保存设置")
 
     def _refresh_icons(self):
         self.refresh_button.setEnabled(False)

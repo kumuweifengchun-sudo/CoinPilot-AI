@@ -2,13 +2,13 @@
 from copy import deepcopy
 import math
 
-from PyQt6.QtCore import QDateTime, Qt
-from PyQt6.QtGui import QColor
-from PyQt6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QDateTimeEdit, QDialog,
+from PyQt6.QtCore import QDateTime, Qt, QItemSelectionModel
+from PyQt6.QtGui import QColor, QKeySequence, QShortcut
+from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QColorDialog, QComboBox, QDateTimeEdit, QDialog,
     QDialogButtonBox, QDoubleSpinBox, QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+    QListWidget, QListWidgetItem, QPushButton, QScrollArea, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
-from .chart_state import BARS, TOOLS, DEFAULT_EMAS, validate_emas
+from .chart_state import BARS, OBJECT_NAMES, DEFAULT_EMAS, validate_emas
 from .ui_common import button
 from ..theme import color as theme_color
 
@@ -46,8 +46,11 @@ def dialog_buttons(dialog, layout):
 
 
 class EmaDialog(QDialog):
-    def __init__(self, book, parent=None):
+    def __init__(self, book, parent=None, *, embedded=False):
         super().__init__(parent)
+        self.embedded = embedded
+        if embedded:
+            self.setWindowFlags(Qt.WindowType.Widget)
         self.book = book
         self.setWindowTitle("EMA 指标 · 所有币种与页面共用")
         self.resize(570, 360)
@@ -65,6 +68,8 @@ class EmaDialog(QDialog):
         for item in book.emas:
             self.add(item)
         dialog_buttons(self, root)
+        self.feedback = QLabel()
+        root.addWidget(self.feedback)
 
     def defaults(self):
         self.table.setRowCount(0)
@@ -96,17 +101,31 @@ class EmaDialog(QDialog):
             items.append({"visible": self.table.cellWidget(row, 0).isChecked(), "period": self.table.cellWidget(row, 1).value(),
                           "color": self.table.cellWidget(row, 2).color, "width": self.table.cellWidget(row, 3).value()})
         self.book.save_emas(validate_emas(items))
-        super().accept()
+        if self.embedded:
+            self.feedback.setText("EMA 设置已保存")
+        else:
+            super().accept()
+
+    def reject(self):
+        if not self.embedded:
+            return super().reject()
+        self.table.setRowCount(0)
+        for item in self.book.emas:
+            self.add(item)
+        self.feedback.setText("已恢复已保存 EMA 设置")
 
 
 class DrawingDialog(QDialog):
     def __init__(self, obj, parent=None):
         super().__init__(parent)
         self.result_object = deepcopy(obj)
-        self.setWindowTitle(TOOLS[obj["tool"]] + " · 属性")
+        self.setWindowTitle((obj.get('name') or OBJECT_NAMES[obj['tool']]) + ' · 属性')
         self.resize(520, 380 if obj["tool"] != "fib" else 620)
         root = QVBoxLayout(self)
         form = QFormLayout()
+        self.name = QLineEdit(obj.get('name') or OBJECT_NAMES[obj['tool']])
+        self.name.setMaxLength(80)
+        form.addRow('名称', self.name)
         self.color, self.width = ColorButton(obj["color"]), width_spin(obj["width"])
         self.style = QComboBox()
         for name, key in (("实线", "solid"), ("虚线", "dash"), ("点线", "dot")):
@@ -114,6 +133,15 @@ class DrawingDialog(QDialog):
         self.style.setCurrentIndex(self.style.findData(obj["style"]))
         for title, widget in (("颜色", self.color), ("线宽", self.width), ("线型", self.style)):
             form.addRow(title, widget)
+        self.fill_color = self.fill_opacity = None
+        if obj['tool'] in ('rectangle', 'region'):
+            self.fill_color = ColorButton(obj.get('fill_color', obj['color']))
+            self.fill_opacity = QSpinBox()
+            self.fill_opacity.setRange(0, 100)
+            self.fill_opacity.setSuffix('%')
+            self.fill_opacity.setValue(round(obj.get('fill_opacity', 24/255*100)))
+            form.addRow('填充颜色', self.fill_color)
+            form.addRow('不透明度（0 为不填充）', self.fill_opacity)
         self.text = QLineEdit(obj.get("text", ""))
         if obj["tool"] == "text":
             form.addRow("文字", self.text)
@@ -128,7 +156,16 @@ class DrawingDialog(QDialog):
             row.addWidget(field)
             form.addRow(f"锚点 {i+1}", row)
             self.anchors.append((date, field))
-        root.addLayout(form)
+        if obj['tool'] == 'region' and len(obj['anchors']) > 4:
+            content = QWidget()
+            content.setLayout(form)
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setWidget(content)
+            root.addWidget(scroll, 1)
+            self.resize(560, 620)
+        else:
+            root.addLayout(form)
         self.locked, self.hidden = QCheckBox("锁定"), QCheckBox("隐藏")
         self.locked.setChecked(obj["locked"])
         self.hidden.setChecked(obj["hidden"])
@@ -173,7 +210,14 @@ class DrawingDialog(QDialog):
 
     def accept(self):
         try:
-            anchors = [[date.dateTime().toMSecsSinceEpoch(), float(field.text())] for date, field in self.anchors]
+            name = self.name.text().strip()
+            if not name:
+                raise ValueError('请输入绘图对象名称')
+            anchors = []
+            for (date, field), (stamp, price) in zip(self.anchors, self.result_object['anchors']):
+                edited_time = date.dateTime().toMSecsSinceEpoch()
+                anchors.append([stamp if edited_time == int(stamp) else edited_time,
+                                price if field.text() == f'{price:.12g}' else float(field.text())])
             if any(not math.isfinite(a[1]) or abs(a[1]) > 1e20 for a in anchors):
                 raise ValueError("锚点价格必须是有限数值")
             levels = []
@@ -186,7 +230,7 @@ class DrawingDialog(QDialog):
                 if not levels:
                     raise ValueError("至少保留一条斐波拉契比例")
             if self.result_object["locked"] and self.locked.isChecked():
-                # 锁定对象允许显隐和解锁，禁止悄悄改变锚点/外观。
+                # 锁定对象允许重命名、显隐和解锁，禁止悄悄改变锚点/外观。
                 self.result_object["hidden"] = self.hidden.isChecked()
             else:
                 self.result_object.update(anchors=anchors, color=self.color.color, width=self.width.value(),
@@ -194,6 +238,9 @@ class DrawingDialog(QDialog):
                     bars=[bar for bar, check in self.bars.items() if check.isChecked()])
                 if self.levels is not None:
                     self.result_object["levels"] = levels
+                if self.fill_color is not None:
+                    self.result_object.update(fill_color=self.fill_color.color, fill_opacity=self.fill_opacity.value())
+            self.result_object['name'] = name
         except (ValueError, AttributeError) as exc:
             self.error.setText(str(exc) or "请检查锚点及比例")
             return
@@ -208,13 +255,28 @@ class ObjectsDialog(QDialog):
         self.resize(480, 400)
         root = QVBoxLayout(self)
         self.items = QListWidget()
+        self.items.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.items.itemDoubleClicked.connect(lambda _: self.edit())
         root.addWidget(self.items)
         row = QHBoxLayout()
-        for text, callback in (("属性", self.edit), ("显隐", lambda: self.toggle("hidden")), ("锁定 / 解锁", lambda: self.toggle("locked")), ("删除", self.delete)):
-            row.addWidget(button(text, callback))
+        self.edit_button = button('属性', self.edit)
+        self.delete_button = button('删除所选', self.delete)
+        row.addWidget(button('全选', self.items.selectAll))
+        row.addWidget(self.edit_button)
+        row.addWidget(button('显隐', lambda: self.toggle('hidden')))
+        row.addWidget(button('锁定 / 解锁', lambda: self.toggle('locked')))
+        row.addWidget(self.delete_button)
         root.addLayout(row)
-        root.addWidget(QLabel("锁定对象须先解锁再删除；画线在同币种的各周期及两个页面共享。"))
+        help_text = QLabel('Ctrl / Shift 多选，Ctrl+A 全选，Delete 删除所选；锁定对象会保留。画线在同币种各周期共享。')
+        help_text.setWordWrap(True)
+        root.addWidget(help_text)
+        self.feedback = QLabel()
+        self.feedback.setWordWrap(True)
+        root.addWidget(self.feedback)
+        self.items.itemSelectionChanged.connect(self.selection_changed)
+        shortcut = QShortcut(QKeySequence(Qt.Key.Key_Delete), self.items)
+        shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+        shortcut.activated.connect(self.delete)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
@@ -222,35 +284,58 @@ class ObjectsDialog(QDialog):
 
     def reload(self):
         current = self.identity()
+        selected = self.identities()
         self.items.clear()
         for obj in self.chart.objects:
-            text = TOOLS[obj["tool"]] + (" · "+obj["text"] if obj["text"] else "")
+            text = (obj.get('name') or OBJECT_NAMES[obj['tool']]) + (" · "+obj["text"] if obj["text"] else "")
             text += " · " + ("隐藏" if obj["hidden"] else "显示") + (" · 已锁定" if obj["locked"] else "")
             item = QListWidgetItem(text)
+            item.setToolTip(text)
             item.setData(Qt.ItemDataRole.UserRole, obj["id"])
             self.items.addItem(item)
             if obj["id"] == current:
-                self.items.setCurrentItem(item)
+                self.items.setCurrentItem(item, QItemSelectionModel.SelectionFlag.NoUpdate)
+            item.setSelected(obj['id'] in selected)
+        self.selection_changed()
+
+    def identities(self):
+        return {item.data(Qt.ItemDataRole.UserRole) for item in self.items.selectedItems()}
+
+    def selection_changed(self):
+        count = len(self.items.selectedItems())
+        self.edit_button.setEnabled(count == 1)
+        self.delete_button.setEnabled(count > 0)
+        self.delete_button.setText(f'删除所选 ({count})' if count else '删除所选')
 
     def identity(self):
         item = self.items.currentItem()
         return item.data(Qt.ItemDataRole.UserRole) if item else None
 
     def edit(self):
-        edit_drawing(self.chart, self.identity(), self)
-        self.reload()
+        selected = self.identities()
+        if len(selected) == 1:
+            edit_drawing(self.chart, next(iter(selected)), self)
+            self.reload()
 
     def toggle(self, name):
-        obj = next((o for o in self.chart.objects if o["id"] == self.identity()), None)
-        if obj:
-            obj[name] = not obj[name]
+        selected = self.identities()
+        objects = [o for o in self.chart.objects if o['id'] in selected]
+        if objects:
+            value = not all(o[name] for o in objects)
+            for obj in objects:
+                obj[name] = value
             self.chart.persist_objects()
             self.reload()
 
     def delete(self):
-        self.chart.selected_id = self.identity()
-        self.chart.delete_selected()
+        selected = self.identities()
+        if not selected:
+            return
+        locked = sum(o['id'] in selected and o['locked'] for o in self.chart.objects)
+        count = self.chart.delete_objects(selected)
         self.reload()
+        self.feedback.setText(f'已删除 {count} 个对象' + (f'，保留 {locked} 个锁定对象。' if locked else '。') +
+                              ('关闭窗口后可在图表按 Ctrl+Z 撤销。' if count else ''))
 
 
 def edit_drawing(chart, identity, parent):

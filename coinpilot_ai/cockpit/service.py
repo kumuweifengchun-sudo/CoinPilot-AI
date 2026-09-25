@@ -1,6 +1,7 @@
 """由应用持有的共享后台服务，不依赖任何工作台窗口。"""
 import hashlib
 import math
+import sqlite3
 import time
 import uuid
 from copy import deepcopy
@@ -16,6 +17,7 @@ from .domain import instrument_id, number, aligned
 from .history import HistorySync
 from .journal import aggregate, summarize
 from .okx import OkxClient
+from .paper import PaperBroker
 from .secrets import CredentialVault
 from .store import Store, encode
 from .trading import TradingService
@@ -95,18 +97,41 @@ class CockpitService(QObject):
 
     def _configure_account(self):
         try:
-            credentials = self.vault.read("okx/" + self.environment) or {}
+            credentials = {} if self.environment == 'paper' else self.vault.read("okx/" + self.environment) or {}
         except OSError as exc:
             credentials = {}
             self.account_error = str(exc)
         fingerprint = hashlib.sha256(credentials.get("key", "unconfigured").encode()).hexdigest()[:16]
         self.scope = self.environment + ":" + fingerprint
         self.api = OkxClient(self.transport, credentials, self.environment)
+        if self.environment == 'paper':
+            self.scope = PaperBroker.SCOPE
+            self.api = PaperBroker(self.store, self.api, lambda: self.specs, lambda: self.quotes, self._paper_changed)
         self.trading = TradingService(self.api, self.store, self.scope, self.validate_order,
                                       self._local_order_changed, self.trading_allowed)
         self.history = HistorySync(self.api, self.store, self.scope, self._history_row, self._history_finished)
         for key, state in self.store.list("rule_state", self.scope):
             self.engine.states[key] = RuleState(last_fired=state.get("last_fired", 0))
+        if self.environment == 'paper':
+            self.refresh_account()
+
+    @property
+    def account_connected(self):
+        return self.environment == 'paper' or bool(self.api.credentials)
+
+    @property
+    def environment_label(self):
+        return {'paper': '本地模拟', 'demo': '模拟环境', 'live': '真实环境'}[self.environment]
+
+    def _paper_changed(self):
+        if not self.closed and self.environment == 'paper':
+            self.refresh_account()
+            changes, self.api.order_changes = self.api.order_changes, []
+            for order in changes:
+                self._observe_order(order)
+            self.trading.recover()
+            self.updated.emit('orders')
+            self.updated.emit('history')
 
     def start(self):
         self.running = True
@@ -127,6 +152,7 @@ class CockpitService(QObject):
     def instruments(self):
         result = set(self.settings["watchlist"]) | {self.selected}
         result.update(p["instId"] for p in self.positions if number(p.get("pos") or "0"))
+        result.update(o['instId'] for o in self.pending_orders)
         result.update(r["instrument"] for _, r in self.rules() if r.get("enabled", True))
         return sorted(result)
 
@@ -151,6 +177,17 @@ class CockpitService(QObject):
             self.quotes[inst] = {"instrument": inst, "price": str(price), "source": "okx", "time": server_time, "received_at": now}
             self.engine.tick(inst, price, server_time)
             self.market_error = ""
+            if self.environment == 'paper':
+                try:
+                    self.api.match(inst)
+                    self.refresh_account()
+                except (ValueError, OSError, sqlite3.Error) as exc:
+                    message = f'本地模拟成交未完成：{exc}'
+                    if self.account_error != message:
+                        self.message.emit(message)
+                    self.account_error = message
+                    self.account['time'] = 0
+                    self.updated.emit('account')
             self._evaluate(inst)
         self.updated.emit("price")
 
@@ -183,7 +220,7 @@ class CockpitService(QObject):
                     pairs.update((rule["instrument"], c.get("bar", "15m")) for c in rule.get("conditions", []) if c["metric"] == "volume_ratio")
             for i, (inst, bar) in enumerate(sorted(pairs)):
                 QTimer.singleShot(i * 350, lambda a=inst, b=bar: self.fetch_candles(a, b))
-        if now - self.last_reconcile >= 10 and self.api.credentials:
+        if now - self.last_reconcile >= 10 and self.account_connected:
             self.last_reconcile = now
             self.trading.recover()
             self.recover_actions()
@@ -221,7 +258,7 @@ class CockpitService(QObject):
         self.updated.emit("settings")
 
     def refresh_account(self):
-        if self.closed or self.account_busy or not self.api.credentials:
+        if self.closed or self.account_busy or not self.account_connected:
             return
         self.account_busy = True
         generation = self.generation
@@ -289,9 +326,9 @@ class CockpitService(QObject):
         next_job()
 
     def change_account(self, environment, credentials=None):
-        if environment not in ("demo", "live"):
+        if environment not in ("paper", "demo", "live"):
             raise ValueError("无效的环境")
-        if credentials is not None:
+        if credentials is not None and environment != 'paper':
             if not all(credentials.get(k, "").strip() for k in ("key", "secret", "passphrase")):
                 raise ValueError("API Key、Secret 和 Passphrase 都需要填写")
             self.vault.write("okx/" + environment, credentials)
@@ -388,7 +425,7 @@ class CockpitService(QObject):
         for rule_id, rule in self.rules():
             if rule.get("enabled", True) and rule["mode"] == "order" and rule["instrument"] == row["instId"] and state in rule["states"]:
                 self.record_event({"name": rule["name"], "rule_id": rule_id, "instrument": row["instId"],
-                                   "time": time.time(), "source": "okx", "priority": "order", "order": row})
+                                   "time": time.time(), "source": "paper" if self.environment == "paper" else "okx", "priority": "order", "order": row})
         local_id = row.get("clOrdId")
         local = self.store.get("local_order", local_id, None, self.scope) if local_id else None
         if local:
@@ -400,12 +437,15 @@ class CockpitService(QObject):
                 self.mark_demo("cancel", {"order_id": key, "time": time.time()})
 
     def _local_order_changed(self, row):
+        if self.environment == 'paper':
+            row['protection'] = row.get('protection', '').replace('交易所已生成，详见止盈止损订单', '本地止盈止损已生效').replace('交易所', '本地模拟')
+            self.store.put('local_order', row['client_id'], row, self.scope)
         if row["status"] == "failed":
             marker = "failed:" + row["client_id"]
             if not self.store.get("order_seen", marker, False, self.scope):
                 self.store.put("order_seen", marker, True, self.scope)
                 self.record_event({"name": "订单提交失败", "instrument": row["draft"]["instrument"],
-                                   "time": time.time(), "source": "okx", "priority": "order", "error": row.get("error")})
+                                   "time": time.time(), "source": "paper" if self.environment == "paper" else "okx", "priority": "order", "error": row.get("error")})
         if row["status"] == "filled":
             self.mark_demo(row["draft"]["action"], {"order_id": row.get("order_id"), "time": time.time()})
         if row["status"] == "canceled":
@@ -433,14 +473,19 @@ class CockpitService(QObject):
             self.store.put("demo_check", check, dict(evidence, scope=self.scope, schema=1))
 
     def trading_allowed(self):
-        if self.environment == "demo":
+        if self.environment in ("demo", "paper"):
             return True
         return all(self.store.get("demo_check", key, {}).get("schema") == 1 for key in DEMO_CHECKS)
 
     def validate_order(self, draft, client_id):
         self._check_pending_action(draft.instrument)
-        return draft.payload(self.specs.get(draft.instrument, {}), self.account, self.positions,
-                             self.quotes.get(draft.instrument), time.time(), client_id)
+        if self.environment == 'paper':
+            self.refresh_account()
+        payload = draft.payload(self.specs.get(draft.instrument, {}), self.account, self.positions,
+                                self.quotes.get(draft.instrument), time.time(), client_id)
+        if self.environment == 'paper':
+            self.api.validate(payload)
+        return payload
 
     def trade_action(self, path, payload, callback):
         if not self.trading_allowed() or time.time() - self.account.get("time", 0) > 20:

@@ -1,5 +1,6 @@
 """两个页面共用的图表工具栏、状态栏与画布。"""
 import time
+from dataclasses import replace
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (QButtonGroup, QHBoxLayout, QLabel, QMenu, QPushButton, QScrollArea, QSplitter,
@@ -35,12 +36,19 @@ class ChartPanel(QWidget):
     maximize_requested = pyqtSignal(bool)
     bottom_requested = pyqtSignal()
     sidebar_requested = pyqtSignal()
+    preferences_requested = pyqtSignal()
 
     def __init__(self, service, *, trading=False, parent=None):
         super().__init__(parent)
         self.service, self.trading = service, trading
         self.maximized = False
         self.warm_pending = False
+        self.pending_kinds = set()
+        self.pending_change = None
+        self.refresh_timer = QTimer(self)
+        self.refresh_timer.setSingleShot(True)
+        self.refresh_timer.setInterval(33)
+        self.refresh_timer.timeout.connect(self.flush_refresh)
         self.range_timer = QTimer(self)
         self.range_timer.setSingleShot(True)
         self.range_timer.setInterval(300)
@@ -133,7 +141,7 @@ class ChartPanel(QWidget):
         self.canvas.edit_requested.connect(lambda identity: edit_drawing(self.canvas, identity, self))
         self.canvas.tool_finished.connect(lambda: self.tool_buttons["cursor"].setChecked(True))
         self.canvas.view_changed.connect(lambda: self.auto_button.setChecked(self.canvas.auto_scale))
-        self.canvas.view_changed.connect(self.range_timer.start)
+        self.canvas.view_changed.connect(self.schedule_range)
         row.addWidget(self.canvas, 1)
         root.addLayout(row, 1)
         bottom = QHBoxLayout()
@@ -148,6 +156,7 @@ class ChartPanel(QWidget):
         root.addLayout(bottom)
         self.setStyleSheet(chart_controls_style())
         events.changed.connect(self.apply_theme)
+        service.chart_feed.series_changed.connect(self.series_changed)
         service.updated.connect(self.refresh)
         service.chart_book.changed.connect(self.settings_changed)
         self.refresh("selection")
@@ -193,7 +202,7 @@ class ChartPanel(QWidget):
         self.canvas.setFocus()
 
     def ema_settings(self):
-        EmaDialog(self.service.chart_book, self).exec()
+        self.preferences_requested.emit()
 
     def settings_changed(self, kind, key):
         if kind == "ema":
@@ -208,8 +217,12 @@ class ChartPanel(QWidget):
             self.service.chart_feed.fetch(self.service.selected, self.service.bar, older=True)
 
     def ensure_view(self):
-        if self.service.running and not self.service.closed and not self.canvas.follow:
+        if self.isVisible() and self.service.running and not self.service.closed and not self.canvas.follow:
             self.service.chart_feed.ensure_range((self.canvas.instrument, self.canvas.bar), self.canvas.left_time, self.canvas.count)
+
+    def schedule_range(self):
+        if self.isVisible():
+            self.range_timer.start()
 
     def retry_history(self):
         self.service.chart_feed.window_attempts.clear()
@@ -217,7 +230,7 @@ class ChartPanel(QWidget):
         self.load_older()
 
     def maybe_warm(self):
-        if not self.service.running or self.warm_pending:
+        if not self.isVisible() or not self.service.running or self.warm_pending:
             return
         pair = (self.service.selected, self.service.bar)
         rows = self.service.candles.get(pair, [])
@@ -228,7 +241,7 @@ class ChartPanel(QWidget):
 
     def warm_next(self):
         self.warm_pending = False
-        if not self.service.closed:
+        if self.isVisible() and not self.service.closed:
             pair = (self.service.selected, self.service.bar)
             need = max((e["period"]*5 for e in self.service.chart_book.emas if e["visible"]), default=0)
             if len(self.service.candles.get(pair, [])) < need:
@@ -237,29 +250,82 @@ class ChartPanel(QWidget):
     def set_data(self, rows, title=None):
         self.canvas.set_data(rows)
 
+    def series_changed(self, change):
+        if change.pair != (self.service.selected, self.service.bar):
+            return
+        previous = self.pending_change
+        if previous is not None and previous.pair == change.pair:
+            bounds = [t for t in (previous.first, change.first) if t is not None]
+            change = replace(change, first=min(bounds) if bounds else None,
+                             structural=change.structural or previous.structural)
+        self.pending_change = change
+        self.queue_refresh("series")
+
+    def queue_refresh(self, kind):
+        self.pending_kinds.add(kind)
+        if self.isVisible() and not self.refresh_timer.isActive():
+            self.refresh_timer.start()
+
     def refresh(self, kind):
         s = self.service
         if s.closed:
             return
         if kind in ("selection", "environment"):
+            self.pending_change = None
             self.canvas.set_context(s.environment, s.selected, s.bar)
             for bar, btn in self.period_buttons.items():
                 btn.setChecked(bar == s.bar)
             self.tool_buttons["cursor"].setChecked(True)
             self.canvas.tool = "cursor"
-        if kind in ("candles", "selection", "environment"):
-            self.canvas.set_data(s.candles.get((s.selected, s.bar), []))
+        if kind == "candles":
+            # 保留直接注入离线数据的兼容入口；正常推送由带版本的通知驱动。
+            if self.isVisible():
+                series = s.chart_feed.get_series((s.selected, s.bar))
+                if self.canvas._series is not series or self.canvas._series_revision != series.revision:
+                    self.queue_refresh("series")
+            self.queue_refresh("chart_status")
+        elif kind in ("price", "status", "selection", "environment", "account", "orders", "chart_status"):
+            self.queue_refresh(kind)
+
+    def flush_refresh(self):
+        self.refresh_timer.stop()
+        s = self.service
+        if s.closed or not self.isVisible():
+            return
+        kinds, self.pending_kinds = self.pending_kinds, set()
+        change, self.pending_change = self.pending_change, None
+        all_state = bool(kinds & {"selection", "environment", "show"})
+        if all_state or "series" in kinds:
+            self.canvas.bind_series(s.chart_feed.get_series((s.selected, s.bar)), None if all_state else change)
             self.maybe_warm()
             if not self.range_timer.isActive():
                 self.range_timer.start()
-        if kind in ("price", "status", "selection", "environment"):
+        repaint = all_state
+        if all_state or kinds & {"price", "status"}:
             quote = s.quotes.get(s.selected, {})
-            self.canvas.last_price = float(quote["price"]) if quote else None
-            self.canvas.price_stale = time.time()-quote.get("time", 0) > 30
-        if kind in ("account", "orders", "status", "selection", "environment"):
-            self.canvas.overlays = trade_lines(s) if self.trading else []
-            self.canvas.account_stale = time.time()-s.account.get("time", 0) > 20 or bool(s.account_error)
-        self.status.setText("OKX · " + s.chart_feed.text((s.selected, s.bar)))
-        self.status.setToolTip(self.status.text()+"\n空白拖动平移 · 滚轮缩放 · 拖动右侧价格轴拉伸 · 点击 EMA 图例编辑")
+            price = float(quote["price"]) if quote else None
+            stale = time.time()-quote.get("time", 0) > 30
+            repaint |= (price, stale) != (self.canvas.last_price, self.canvas.price_stale)
+            self.canvas.last_price, self.canvas.price_stale = price, stale
+        if all_state or kinds & {"account", "orders", "status"}:
+            overlays = trade_lines(s) if self.trading else []
+            stale = time.time()-s.account.get("time", 0) > 20 or bool(s.account_error)
+            repaint |= overlays != self.canvas.overlays or stale != self.canvas.account_stale
+            self.canvas.overlays, self.canvas.account_stale = overlays, stale
+        status = "OKX · " + s.chart_feed.text((s.selected, s.bar))
+        if self.status.text() != status:
+            self.status.setText(status)
+            self.status.setToolTip(status+"\n空白拖动平移 · 滚轮缩放 · 拖动右侧价格轴拉伸 · 点击 EMA 图例编辑")
         self.auto_button.setChecked(self.canvas.auto_scale)
-        self.canvas.update()
+        if repaint:
+            self.canvas.update()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.pending_kinds.add("show")
+        self.flush_refresh()
+
+    def hideEvent(self, event):
+        self.refresh_timer.stop()
+        self.range_timer.stop()
+        super().hideEvent(event)

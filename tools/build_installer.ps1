@@ -66,6 +66,7 @@ try {
     }
     $version = $metadata.version
     if ($version -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') { throw 'Installer version must have 3 or 4 numeric components.' }
+    $windowsVersion = if (($version.Split('.')).Count -eq 3) { "$version.0" } else { $version }
 
     # 每次构建使用独立暂存目录；失败时不会把上一轮 EXE 或 Setup 当作成功产物。
     $runId = [Guid]::NewGuid().ToString('N')
@@ -76,7 +77,14 @@ try {
     Invoke-Checked $uv @('run', '--locked', '--group', 'build', 'pyinstaller', '--clean', '--noconfirm',
         '--distpath', $stageDist, '--workpath', (Join-Path $stage 'pyinstaller'), 'coinpilot-ai.spec')
 
-    $required = @('coinpilot-ai.exe', '_internal\python313.dll', '_internal\coinpilot-ai.ico',
+    $required = @('coinpilot-ai.exe', '_internal\python313.dll', '_internal\pyproject.toml',
+        '_internal\coinpilot_ai\assets\app_icon\app.ico',
+        '_internal\coinpilot_ai\assets\app_icon\16.ico',
+        '_internal\coinpilot_ai\assets\app_icon\32.ico',
+        '_internal\coinpilot_ai\assets\app_icon\64.ico',
+        '_internal\coinpilot_ai\assets\app_icon\128.ico',
+        '_internal\coinpilot_ai\assets\app_icon\256.ico',
+        '_internal\coinpilot_ai\assets\update-install.ps1',
         '_internal\coinpilot_ai\assets\fonts\InterVariable.ttf',
         '_internal\coinpilot_ai\assets\fonts\InterVariable-Italic.ttf',
         '_internal\coinpilot_ai\assets\fonts\OFL.txt',
@@ -94,6 +102,10 @@ try {
     if (-not (Get-ChildItem -LiteralPath "$bundle\_internal\coinpilot_ai\assets" -Recurse -Filter *.svg)) {
         throw 'No SVG resources in bundle.'
     }
+    $exeVersion = (Get-Item -LiteralPath (Join-Path $bundle 'coinpilot-ai.exe')).VersionInfo
+    if ($exeVersion.FileVersion -ne $windowsVersion -or $exeVersion.ProductVersion -ne $version) {
+        throw 'EXE version does not match pyproject.toml.'
+    }
     Invoke-Checked $uv @('run', '--locked', '--group', 'build', 'python', 'tools/smoke_test.py',
         '--exe', (Join-Path $bundle 'coinpilot-ai.exe'))
     $setupStage = Join-Path $stage 'setup'
@@ -102,6 +114,13 @@ try {
     $setupName = "CoinPilotAI-Setup-$version-x64.exe"
     $setup = Join-Path $setupStage $setupName
     if (-not (Test-Path -LiteralPath $setup -PathType Leaf)) { throw 'Compiler did not produce the expected installer.' }
+    $setupVersion = (Get-Item -LiteralPath $setup).VersionInfo
+    # Inno Setup 的文本版本字段带固定宽度空格；文件版本按四段数值核对。
+    $setupFileVersion = @($setupVersion.FileMajorPart, $setupVersion.FileMinorPart,
+        $setupVersion.FileBuildPart, $setupVersion.FilePrivatePart) -join '.'
+    if ($setupFileVersion -ne $windowsVersion -or $setupVersion.ProductVersion.Trim() -ne $version) {
+        throw 'Installer version does not match pyproject.toml.'
+    }
 
     # 发布已成功验证的产物；只移除仓库 dist 下固定的中间产物目录。
     $distRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot 'dist'))

@@ -1,11 +1,10 @@
 """应用级生命周期与系统托盘，迷你窗口继续作为默认入口。"""
 import sqlite3
 
-from PyQt6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PyQt6.QtCore import QEvent, QObject, Qt, QTimer
 from PyQt6.QtWidgets import QApplication, QHBoxLayout, QLabel, QMenu, QPushButton, QSystemTrayIcon, QVBoxLayout, QWidget
 
-from ..icons import icon
+from ..icons import tray_icon, icon
 from ..theme import color, events, menu_style, style_sheet
 from .service import CockpitService
 from .workbench import Workbench
@@ -61,9 +60,10 @@ class NotificationToast(QWidget):
 
 
 class DesktopController(QObject):
-    def __init__(self, app, widget, config_path, cache_dir):
+    def __init__(self, app, widget, config_path, cache_dir, *, updater=None):
         super().__init__(app)
         self.app, self.widget = app, widget
+        self.updater = updater
         self._closing = False
         self.window = None
         self.warning = ""
@@ -73,16 +73,19 @@ class DesktopController(QObject):
         self.menu = QMenu()
         self.menu.setStyleSheet(menu_style())
         events.changed.connect(self.refresh_theme)
-        self.status_action = self.menu.addAction("CoinPilot AI · 后台运行中")
+        self.status_action = self.menu.addAction("后台运行")
         self.status_action.setEnabled(False)
         self.menu.addSeparator()
-        self.workbench_action = self.menu.addAction("打开交易工作台", self.open_workbench)
+        self.workbench_action = self.menu.addAction("交易台", self.open_workbench)
         self.workbench_action.setIcon(icon("workbench"))
         self.menu.setDefaultAction(self.workbench_action)
-        self.visibility_action = self.menu.addAction("显示迷你窗口", widget.toggle_visibility)
-        self.settings_action = self.menu.addAction("迷你窗口设置", widget.open_settings)
+        self.visibility_action = self.menu.addAction("显示小窗", widget.toggle_visibility)
+        self.settings_action = self.menu.addAction("设置", widget.open_settings)
         self.settings_action.setIcon(icon("settings"))
-        self.pause_action = self.menu.addAction("暂停弹出通知")
+        if updater is not None:
+            self.update_action = self.menu.addAction("检查更新", updater.open)
+            updater.notice.connect(lambda text: self.tray.showMessage("CoinPilot AI · 发现新版本", text))
+        self.pause_action = self.menu.addAction("暂停通知")
         self.pause_action.setIcon(icon("bell-off"))
         self.pause_action.setCheckable(True)
         self.pause_action.toggled.connect(self.pause_notifications)
@@ -92,7 +95,7 @@ class DesktopController(QObject):
         self.tray.setContextMenu(self.menu)
         self.update_tray()
         self.tray.activated.connect(self.activated)
-        self.tray.messageClicked.connect(self.open_workbench)
+        self.tray.messageClicked.connect(updater.open if updater is not None else self.open_workbench)
         self.tray.show()
         widget.workbench_requested.connect(self.open_workbench)
         widget.configuration_changed.connect(self.configuration_changed)
@@ -111,6 +114,10 @@ class DesktopController(QObject):
             self.workbench_action.setEnabled(False)
             self.pause_action.setEnabled(False)
         self.update_tray()
+        if self.service is not None:
+            widget.settings_router = self.open_settings
+            if updater is not None:
+                updater.settings_router = lambda: self.open_settings("软件更新")
         app.setQuitOnLastWindowClosed(False)
         app.installEventFilter(self)
         app.aboutToQuit.connect(self.close)
@@ -125,7 +132,7 @@ class DesktopController(QObject):
             self.show_mini()
             return
         if self.window is None:
-            self.window = Workbench(self.service, self.widget.open_settings)
+            self.window = Workbench(self.service, settings_owner=self.widget, updater=self.updater)
             self.window.events_seen.connect(self.clear_badge)
         if self.window.isMinimized():
             self.window.showNormal()
@@ -134,6 +141,11 @@ class DesktopController(QObject):
         self.window.raise_()
         self.window.activateWindow()
         self.clear_badge()
+
+    def open_settings(self, section="常规与网络"):
+        self.open_workbench()
+        if self.window is not None:
+            self.window.open_settings(section)
 
     def activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
@@ -160,24 +172,12 @@ class DesktopController(QObject):
         status = "通知已暂停" if paused else "后台运行中"
         if self.service is None:
             status = "迷你行情运行中 · 工作台不可用"
-        self.status_action.setText("CoinPilot AI · " + status)
+        self.status_action.setText("服务异常" if self.service is None else "通知暂停" if paused else "后台运行")
         self.tray.setToolTip("CoinPilot AI · " + status + (f"\n{count} 条未读提醒" if count else "") + "\n单击显示迷你窗口 · 双击打开工作台")
-        self.visibility_action.setText("隐藏迷你窗口" if self.widget.isVisible() else "显示迷你窗口")
+        self.visibility_action.setText("隐藏小窗" if self.widget.isVisible() else "显示小窗")
         self.visibility_action.setIcon(icon("eye-off" if self.widget.isVisible() else "eye"))
-        pixmap = QPixmap(64, 64)
-        pixmap.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(color("surface_raised")))
-        painter.drawRoundedRect(3, 3, 58, 58, 14, 14)
-        icon("brand", color("text")).paint(painter, 12, 12, 40, 40)
-        if count or paused:
-            painter.setBrush(QColor(color("warning" if paused else "positive")))
-            painter.setPen(QColor(color("surface_raised")))
-            painter.drawEllipse(45, 3, 16, 16)
-        painter.end()
-        self.tray.setIcon(QIcon(pixmap))
+        badge = "warning" if paused else "positive" if count else None
+        self.tray.setIcon(tray_icon(badge))
 
     def refresh_theme(self, _theme_id=None):
         self.menu.setStyleSheet(menu_style())
@@ -218,6 +218,9 @@ class DesktopController(QObject):
         if self._closing:
             return
         self._closing = True
+        self.widget.settings_router = None
+        if self.updater is not None:
+            self.updater.settings_router = None
         self.click_timer.stop()
         self.tray.hide()
         self.tray.setContextMenu(None)

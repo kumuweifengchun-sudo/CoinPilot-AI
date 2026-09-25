@@ -2,13 +2,37 @@
 from pathlib import Path
 from importlib.metadata import distribution
 import os
+import runpy
 import sys
 
 from PyQt6.QtCore import QLibraryInfo
+from PyInstaller.utils.win32.versioninfo import (
+    FixedFileInfo, StringFileInfo, StringStruct, StringTable,
+    VarFileInfo, VarStruct, VSVersionInfo,
+)
 
 root = Path(SPECPATH)
+metadata = runpy.run_path(str(root / "coinpilot_ai" / "version.py"))
+version, windows_version = metadata["VERSION"], metadata["WINDOWS_VERSION"]
+file_version = ".".join(map(str, windows_version))
+manifest = (root / "coinpilot-ai.manifest").read_text(encoding="utf-8").replace("@APP_VERSION@", file_version)
+version_info = VSVersionInfo(
+    ffi=FixedFileInfo(filevers=windows_version, prodvers=windows_version),
+    kids=[
+        StringFileInfo([StringTable("040904B0", [
+            StringStruct("CompanyName", "CoinPilot AI"),
+            StringStruct("FileDescription", "CoinPilot AI · 币航 — AI 加密交易工作台"),
+            StringStruct("FileVersion", file_version),
+            StringStruct("InternalName", "coinpilot-ai"),
+            StringStruct("OriginalFilename", "coinpilot-ai.exe"),
+            StringStruct("ProductName", "CoinPilot AI"),
+            StringStruct("ProductVersion", version),
+        ])]),
+        VarFileInfo([VarStruct("Translation", [0x0409, 1200])]),
+    ],
+)
 datas = [
-    (str(root / "coinpilot-ai.ico"), "."),
+    (str(root / "pyproject.toml"), "."),
     (str(root / "coinpilot_ai" / "assets"), "coinpilot_ai/assets"),
     (str(root / "LICENSE"), "licenses/CoinPilotAI"),
     (str(Path(sys.base_prefix) / "LICENSE.txt"), "licenses/Python"),
@@ -43,7 +67,8 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz, a.scripts, [], exclude_binaries=True, contents_directory="_internal",
     name="coinpilot-ai", debug=False, bootloader_ignore_signals=False,
-    strip=False, upx=False, console=False, icon=str(root / "coinpilot-ai.ico"),
-    manifest=str(root / "coinpilot-ai.manifest"),
+    strip=False, upx=False, console=False,
+    icon=str(root / "coinpilot_ai" / "assets" / "app_icon" / "app.ico"),
+    manifest=manifest, version=version_info,
 )
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="coinpilot-ai")

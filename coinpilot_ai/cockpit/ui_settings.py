@@ -4,7 +4,7 @@ import uuid
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QScrollArea, QSpinBox,
-    QTabWidget, QTextEdit, QVBoxLayout, QWidget)
+    QStackedWidget, QTextEdit, QVBoxLayout, QWidget)
 
 from .ai import DEFAULT_PROMPTS, SCENARIOS, service_url
 from .alerts import BARS, METRICS
@@ -132,23 +132,86 @@ class RuleDialog(QDialog):
 
 
 class SettingsPage(QWidget):
-    def __init__(self, service, open_legacy, parent=None):
+    def __init__(self, service, open_legacy=None, parent=None, *, owner=None, updater=None, workspace=None):
         super().__init__(parent)
         self.service = service
         self.provider_id = None
         self.template_id = None
         root = QVBoxLayout(self)
-        self.tabs = QTabWidget()
-        root.addWidget(self.tabs)
+        row = QHBoxLayout()
+        self.navigation = QListWidget()
+        self.navigation.setFixedWidth(150)
+        self.tabs = QStackedWidget()
+        self.section_indices = {}
+        self.navigation.currentRowChanged.connect(self.tabs.setCurrentIndex)
+        row.addWidget(self.navigation)
+        row.addWidget(self.tabs, 1)
+        root.addLayout(row, 1)
         self.feedback = QLabel()
         self.feedback.setWordWrap(True)
         root.addWidget(self.feedback)
+        if owner is not None:
+            from ..settings import SettingsDialog
+            self.preferences = SettingsDialog(owner, self, embedded=True)
+            self.add_section("常规与网络", self.preferences)
+        self._chart()
+        if workspace is not None:
+            self._workspace(workspace)
         self._account()
         self._providers()
         self._prompts()
         self._rules()
-        self._general(open_legacy)
+        self._general()
+        if updater is not None:
+            from ..update_ui import UpdateDialog
+            self.update_panel = UpdateDialog(updater, self, embedded=True)
+            updater.dialog = self.update_panel
+            self.update_panel.destroyed.connect(updater.dialog_destroyed)
+            self.add_section("软件更新", self.update_panel)
+        self.navigation.setCurrentRow(0)
         self.reload()
+
+    def add_section(self, title, content):
+        self.section_indices[title] = self.tabs.addWidget(content)
+        item = QListWidgetItem(icon("settings"), title)
+        self.navigation.addItem(item)
+
+    def select_section(self, title):
+        self.navigation.setCurrentRow(self.section_indices.get(title, 0))
+
+    def _chart(self):
+        from .chart_dialogs import EmaDialog
+        layout = self.page("图表")
+        self.magnet = QCheckBox("K 线高低点磁吸（立即生效，按 Alt 临时关闭）")
+        self.magnet.setChecked(self.service.chart_book.magnet_enabled)
+        self.magnet.toggled.connect(self.service.chart_book.save_magnet)
+        layout.addWidget(self.magnet)
+        self.ema_editor = EmaDialog(self.service.chart_book, self, embedded=True)
+        layout.addWidget(self.ema_editor, 1)
+        self.service.chart_book.changed.connect(self.sync_chart)
+
+    def sync_chart(self, kind, _key):
+        if kind == "magnet":
+            self.magnet.blockSignals(True)
+            self.magnet.setChecked(self.service.chart_book.magnet_enabled)
+            self.magnet.blockSignals(False)
+
+    def _workspace(self, workspace):
+        layout = self.page("工作区布局")
+        layout.addWidget(QLabel("面板开关与布局调整立即生效，并自动保存。"))
+        for key, action in workspace.actions.items():
+            check = QCheckBox(action.text())
+            check.setChecked(action.isChecked())
+            check.toggled.connect(lambda checked, k=key: workspace.set_visible(k, checked))
+            action.toggled.connect(check.setChecked)
+            layout.addWidget(check)
+        lock = QCheckBox("锁定面板停靠布局")
+        lock.setChecked(workspace.locked)
+        lock.toggled.connect(workspace.set_locked)
+        workspace.lock_action.toggled.connect(lock.setChecked)
+        layout.addWidget(lock)
+        layout.addWidget(button("恢复默认布局", workspace.reset))
+        layout.addStretch()
 
     def page(self, title):
         content = QWidget()
@@ -168,7 +231,7 @@ class SettingsPage(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setWidget(content)
         name = "wallet" if "账户" in title else "sparkles" if "AI" in title else "notebook-pen" if "提示词" in title else "bell" if "规则" in title else "settings"
-        self.tabs.addTab(scroll, icon(name), title)
+        self.add_section(title, scroll)
         return layout
 
     def run(self, action):
@@ -180,13 +243,26 @@ class SettingsPage(QWidget):
     def _account(self):
         layout = self.page("OKX 账户")
         form = QFormLayout()
-        self.environment = combo([("demo", "模拟交易"), ("live", "真实交易")])
+        self.environment = combo([("paper", "本地模拟（无需 API）"), ("demo", "OKX 模拟交易"), ("live", "真实交易")])
         select_data(self.environment, self.service.environment)
         self.api_key, self.api_secret, self.passphrase = secret_edit(), secret_edit(), secret_edit()
         for title, widget in (("环境", self.environment), ("API Key", self.api_key), ("Secret", self.api_secret), ("Passphrase", self.passphrase)):
             form.addRow(title, widget)
+        def environment_changed():
+            local = self.environment.currentData() == 'paper'
+            for edit in (self.api_key, self.api_secret, self.passphrase):
+                edit.setEnabled(not local)
+        self.environment.currentIndexChanged.connect(environment_changed)
+        self.service.updated.connect(lambda kind: select_data(self.environment, self.service.environment) if kind == 'environment' else None)
+        environment_changed()
         layout.addLayout(form)
-        layout.addWidget(QLabel("两个环境的凭据和交易记录独立保存。只需读取与交易权限，无需提现权限。"))
+        layout.addWidget(QLabel("本地模拟、OKX 模拟和真实交易记录独立保存。OKX 账户只需读取与交易权限，无需提现权限。"))
+        paper_note = QLabel('本地模拟无需 API，初始虚拟资金 100,000 USDT，按实时 OKX 最新价整笔成交，手续费 0.05%。'
+                            '支持市价／限价、撤单、平仓、止盈止损和杠杆，重启保留资金与持仓。'
+                            '不模拟盘口排队、滑点、资金费、强平及逐仓风险隔离；程序关闭或行情中断期间不撮合。'
+                            '本地模拟记录不用于解锁真实交易。')
+        paper_note.setWordWrap(True)
+        layout.addWidget(paper_note)
         actions = QHBoxLayout()
         actions.addWidget(button("保存／切换并连接账户", lambda: self.run(self.save_account), True))
         actions.addWidget(button("刷新账户与验收状态", self.service.refresh_account))
@@ -203,7 +279,7 @@ class SettingsPage(QWidget):
 
     def save_account(self):
         values = [edit.text().strip() for edit in (self.api_key, self.api_secret, self.passphrase)]
-        credentials = dict(zip(("key", "secret", "passphrase"), values)) if any(values) else None
+        credentials = dict(zip(("key", "secret", "passphrase"), values)) if any(values) and self.environment.currentData() != 'paper' else None
         self.service.change_account(self.environment.currentData(), credentials)
         for edit in (self.api_key, self.api_secret, self.passphrase):
             edit.clear()
@@ -372,7 +448,7 @@ class SettingsPage(QWidget):
             self.service.refresh_market()
             self.reload_rules()
 
-    def _general(self, open_legacy):
+    def _general(self):
         layout = self.page("桌面与通知")
         self.pause = QCheckBox("暂停弹出通知（事件继续记录）")
         self.sound = QCheckBox("持仓与订单事件播放提示音")
@@ -381,9 +457,15 @@ class SettingsPage(QWidget):
             widget.setChecked(self.service.settings.get(key, False))
             widget.toggled.connect(lambda value, name=key: self.save_toggle(name, value))
             layout.addWidget(widget)
-        layout.addWidget(button("打开迷你窗口设置", open_legacy), 0, Qt.AlignmentFlag.AlignLeft)
-        layout.addWidget(QLabel("调整迷你窗口的字号、透明度、轮播、快捷键、代理与开机启动。"))
         layout.addStretch()
+
+    def refresh_status(self):
+        # 导航不重新加载表单，保留尚未保存的服务、密钥和提示词草稿。
+        self.update_status()
+        for control, key in ((self.pause, "notifications_paused"), (self.sound, "sound"), (self.auto_ai, "auto_explain")):
+            control.blockSignals(True)
+            control.setChecked(self.service.settings.get(key, False))
+            control.blockSignals(False)
 
     def save_toggle(self, key, value):
         self.service.settings[key] = value
@@ -430,9 +512,9 @@ class SettingsPage(QWidget):
             self.rule_list.addItem(item)
 
     def update_status(self):
-        self.account_status.setText(self.service.account_error or "账户已连接 · " + self.service.account.get("posMode", ""))
+        self.account_status.setText(('本地虚拟账户已就绪 · 可用 ' + self.service.balance.get('availEq', '—') + ' USDT') if self.service.environment == 'paper' else self.service.account_error or "账户已连接 · " + self.service.account.get("posMode", ""))
         lines = [("✓ " if self.service.store.get("demo_check", key) else "○ ") + label for key, label in DEMO_CHECKS.items()]
-        self.check_status.setText("模拟环境验收：\n" + "    ".join(lines))
+        self.check_status.setText("OKX 模拟盘验收（仅用于解锁真实交易）：\n" + "    ".join(lines))
 
     def reload(self):
         self.reload_providers()

@@ -2,8 +2,8 @@
 from datetime import datetime
 from bisect import bisect_left
 
-from PyQt6.QtCore import QPointF, QRectF, Qt
-from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPainterPathStroker, QPen
+from PyQt6.QtCore import QLineF, QPointF, QRectF, Qt
+from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPainterPathStroker, QPen, QPixmap
 
 from .chart_state import BARS
 from ..theme import color
@@ -25,6 +25,11 @@ class ChartRenderer:
             line(QPointF(a.x(), main.top()), QPointF(a.x(), main.bottom()))
         elif tool == "rectangle":
             path.addRect(QRectF(a, b).normalized())
+        elif tool == "region":
+            path.moveTo(a)
+            for point in points[1:]:
+                path.lineTo(point)
+            path.closeSubpath()
         elif tool == "text":
             path.addRect(QRectF(a.x(), a.y()-18, max(35, self.fontMetrics().horizontalAdvance(obj["text"])+8), 23))
         elif tool == "fib":
@@ -52,12 +57,11 @@ class ChartRenderer:
                                f"{diff:+,.6g} ({pct:+.2f}%) · {n:.1f} 根 · {minutes:g} 分钟", obj["color"]))
         return path, points, labels
 
-    def draw_objects(self, p):
-        self.hit_paths = {}
+    def draw_objects(self, p, objects):
         p.save()
         main, _ = self.plot_rects()
         p.setClipRect(main)
-        for obj in self.objects + ([self.preview] if self.preview else []):
+        for obj in sorted(objects, key=lambda item: item['tool'] != 'region'):
             if obj.get("hidden") or self.bar not in obj.get("bars", BARS):
                 continue
             path, points, labels = self.object_path(obj)
@@ -75,9 +79,9 @@ class ChartRenderer:
                     p.drawLine(QPointF(min(a.x(), b.x()), y), QPointF(max(a.x(), b.x()), y))
             else:
                 p.drawPath(path)
-                if obj["tool"] == "rectangle":
-                    fill = QColor(obj["color"])
-                    fill.setAlpha(24)
+                if obj["tool"] in ("rectangle", "region"):
+                    fill = QColor(obj.get("fill_color", obj["color"]))
+                    fill.setAlpha(round(255*obj.get("fill_opacity", 24/255*100)/100))
                     p.fillPath(path, fill)
             last_label = -1e9
             for x, y, text, label_color in sorted(labels, key=lambda item: item[1]):
@@ -91,7 +95,7 @@ class ChartRenderer:
                 p.drawText(QPointF(x, y), text)
             stroker = QPainterPathStroker()
             stroker.setWidth(max(10, obj["width"]+6))
-            self.hit_paths[obj["id"]] = path if obj["tool"] == "text" else stroker.createStroke(path)
+            self.hit_paths[obj["id"]] = path if obj["tool"] in ("text", "region") else stroker.createStroke(path)
             if obj["id"] == self.selected_id:
                 p.setBrush(QColor(color("surface")))
                 p.setPen(QPen(QColor(color("text_secondary" if not obj["locked"] else "text_muted")), 1))
@@ -112,6 +116,141 @@ class ChartRenderer:
         p.setPen(QColor(color("accent_text")))
         p.drawText(QRectF(main.right()+3, y-9, 81, 19), Qt.AlignmentFlag.AlignCenter, text)
 
+    def layer_key(self):
+        return (self.width(), self.height(), self.devicePixelRatioF(), self.font().key(),
+                self._theme_revision, self.bar, self.left_time, self.count,
+                self.low, self.high, self.volume_ratio)
+
+    def new_layer(self):
+        ratio = self.devicePixelRatioF()
+        pixmap = QPixmap(max(1, round(self.width()*ratio)), max(1, round(self.height()*ratio)))
+        pixmap.setDevicePixelRatio(ratio)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        return pixmap
+
+    def draw_market_layer(self, painter):
+        key = (self.layer_key(), self._plot_revision, tuple(tuple(e.items()) for e in self.emas))
+        if key != self._market_key:
+            self._market_layer = self.new_layer()
+            p = QPainter(self._market_layer)
+            p.setFont(self.font())
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            self.draw_market(p)
+            p.end()
+            self._market_key = key
+            self.market_builds += 1
+        painter.drawPixmap(0, 0, self._market_layer)
+
+    def draw_market(self, p):
+        main, volume = self.plot_rects()
+        start, end = self.visible()
+        left, step = self.left_index(), main.width()/self.count
+        for i in range(6):
+            y = main.top()+main.height()*i/5
+            price = self.high-(self.high-self.low)*i/5
+            p.setPen(QPen(QColor(color("chart_grid")), .7))
+            p.drawLine(QPointF(main.left(), y), QPointF(main.right(), y))
+            p.setPen(QColor(color("chart_axis")))
+            p.drawText(QRectF(main.right()+6, y-9, 80, 20), Qt.AlignmentFlag.AlignVCenter, f"{price:,.7g}")
+        grid_count = max(2, int(main.width()/135))
+        for i in range(grid_count):
+            index = left+i*self.count/grid_count
+            x = main.left()+(index-left)*step
+            try:
+                label = datetime.fromtimestamp(self.time_at(index)/1000).strftime("%m-%d %H:%M")
+            except (ValueError, OSError, OverflowError):
+                label = "—"
+            p.setPen(QPen(QColor(color("chart_grid")), .7))
+            p.drawLine(QPointF(x, main.top()), QPointF(x, volume.bottom()))
+            p.setPen(QColor(color("chart_axis")))
+            p.drawText(QRectF(x, volume.bottom()+4, 100, 22), Qt.AlignmentFlag.AlignLeft, label)
+        p.setPen(QPen(QColor(color("border")), 1))
+        p.drawLine(QPointF(main.left(), volume.top()-4), QPointF(main.right(), volume.top()-4))
+        visible = self.values[start:end]
+        max_volume = max((v[4] for v in visible), default=1) or 1
+        sy = main.height()/max(1e-14, self.high-self.low)
+        bottom, low = main.bottom(), self.low
+        interval, volume_bottom, volume_height = self.interval, volume.bottom(), volume.height()
+        ratio = self.devicePixelRatioF()
+        body_width = max(1, step*.64)
+        xs = [main.left()+(stamp-self.left_time)/interval*step+step*.5
+              for stamp in self.times[start:end]]
+        wicks = [[], []]
+        bodies = [[], []]
+        volumes = [[], []]
+        for x, (op, high, lo, close, vol) in zip(xs, visible):
+            side = int(close >= op)
+            yo, yc = bottom-(op-low)*sy, bottom-(close-low)*sy
+            wicks[side].append(QLineF(x, bottom-(high-low)*sy, x, bottom-(lo-low)*sy))
+            bodies[side].append(QRectF(x-step*.32, min(yo, yc), body_width, max(1, abs(yo-yc))))
+            height = vol/max_volume*volume_height
+            # 半透明粗笔在非整数 DPI 下会退化为昂贵的路径光栅化。
+            # 仅在光栅层把同一根柱分为设备像素宽的细线，逻辑坐标/命中不变。
+            pixel_left = round((x-step*.32)*ratio)
+            pixel_right = max(pixel_left+1, round((x-step*.32+body_width)*ratio))
+            for pixel in range(pixel_left, pixel_right):
+                center = (pixel+.5)/ratio
+                volumes[side].append(QLineF(center, volume_bottom-height, center, volume_bottom))
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        for side, token in enumerate(("negative", "positive")):
+            p.setClipRect(main)
+            shade = QColor(color(token))
+            p.setPen(QPen(shade, 1))
+            p.drawLines(wicks[side])
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(shade)
+            p.drawRects(bodies[side])
+            p.setClipRect(volume)
+            shade = QColor(color("volume_up" if side else "volume_down"))
+            shade.setAlpha(140)
+            p.setPen(QPen(shade, 0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.FlatCap))
+            p.drawLines(volumes[side])
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setClipRect(main)
+        for setting, values in zip(self.emas, self.ema_cache):
+            if not setting["visible"]:
+                continue
+            path = QPainterPath()
+            for offset, x in enumerate(xs):
+                i = start+offset
+                y = bottom-(values[i]-low)*sy
+                if i == start or self.times[i]-self.times[i-1] > interval*1.1:
+                    path.moveTo(x, y)
+                else:
+                    path.lineTo(x, y)
+            p.setPen(QPen(QColor(setting["color"]), setting["width"]))
+            p.drawPath(path)
+        p.restore()
+
+    def object_layers(self):
+        dragged = self.selected_id if self.drag and self.drag["mode"] == "object" else None
+        fixed = [o for o in self.objects if o["id"] != dragged]
+        live = [o for o in self.objects if o["id"] == dragged]
+        if self.preview:
+            live.append(self.preview)
+        # 对象数远小于历史数；签名也覆盖外部属性编辑与撤销后的原地变更。
+        key = (self.layer_key(), self.selected_id, repr(fixed))
+        if key != self._objects_key:
+            self._objects_layer = self.new_layer()
+            p = QPainter(self._objects_layer)
+            p.setFont(self.font())
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            self.hit_paths = {}
+            self.draw_objects(p, fixed)
+            p.end()
+            self._fixed_hit_paths = dict(self.hit_paths)
+            self._objects_key = key
+            self.object_builds += 1
+        self.hit_paths = dict(self._fixed_hit_paths)
+        return live
+
+    def draw_object_layer(self, painter):
+        live = self.object_layers()
+        painter.drawPixmap(0, 0, self._objects_layer)
+        self.draw_objects(painter, live)
+
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -126,6 +265,7 @@ class ChartRenderer:
         main, volume = self.plot_rects()
         start, end = self.visible()
         left, step = self.left_index(), main.width()/self.count
+        self.draw_market_layer(p)
         cursor = self.point(self.snap_target[:2]) if self.snap_target is not None else self.pointer
         hovered = len(self.rows)-1
         if cursor and main.left() <= cursor.x() <= main.right():
@@ -151,62 +291,12 @@ class ChartRenderer:
         p.setPen(QColor(color("text_muted")))
         if any(len(self.rows) < e["period"]*5 for e in self.emas if e["visible"]):
             p.drawText(QRectF(main.right()-152, 26, 150, 20), Qt.AlignmentFlag.AlignRight, "* 历史预热不足")
-        for i in range(6):
-            y = main.top()+main.height()*i/5
-            price = self.high-(self.high-self.low)*i/5
-            p.setPen(QPen(QColor(color("chart_grid")), .7))
-            p.drawLine(QPointF(main.left(), y), QPointF(main.right(), y))
-            p.setPen(QColor(color("chart_axis")))
-            p.drawText(QRectF(main.right()+6, y-9, 80, 20), Qt.AlignmentFlag.AlignVCenter, f"{price:,.7g}")
-        grid_count = max(2, int(main.width()/135))
-        for i in range(grid_count):
-            index = left+i*self.count/grid_count
-            x = main.left()+(index-left)*step
-            try:
-                label = datetime.fromtimestamp(self.time_at(index)/1000).strftime("%m-%d %H:%M")
-            except (ValueError, OSError, OverflowError):
-                label = "—"
-            p.setPen(QPen(QColor(color("chart_grid")), .7))
-            p.drawLine(QPointF(x, main.top()), QPointF(x, volume.bottom()))
-            p.setPen(QColor(color("chart_axis")))
-            p.drawText(QRectF(x, volume.bottom()+4, 100, 22), Qt.AlignmentFlag.AlignLeft, label)
-        p.setPen(QPen(QColor(color("border")), 1))
-        p.drawLine(QPointF(main.left(), volume.top()-4), QPointF(main.right(), volume.top()-4))
-        max_volume = max((v[4] for v in self.values[start:end]), default=1) or 1
-        p.save()
-        p.setClipRect(main)
-        for i in range(start, end):
-            op, high, low, close, vol = self.values[i]
-            x = self.x(self.times[i])
-            candle_color = QColor(color("positive" if close >= op else "negative"))
-            p.setPen(QPen(candle_color, 1))
-            p.drawLine(QPointF(x, self.y(high)), QPointF(x, self.y(low)))
-            p.fillRect(QRectF(x-step*.32, min(self.y(op), self.y(close)), max(1, step*.64), max(1, abs(self.y(op)-self.y(close)))), candle_color)
-        p.setClipRect(volume)
-        for i in range(start, end):
-            op, high, low, close, vol = self.values[i]
-            x = self.x(self.times[i])
-            candle_color = QColor(color("volume_up" if close >= op else "volume_down"))
-            candle_color.setAlpha(140)
-            height = vol/max_volume*volume.height()
-            p.fillRect(QRectF(x-step*.32, volume.bottom()-height, max(1, step*.64), height), candle_color)
-        p.setClipRect(main)
-        for setting, values in zip(self.emas, self.ema_cache):
-            if not setting["visible"]:
-                continue
-            path = QPainterPath()
-            for i in range(start, end):
-                point = QPointF(self.x(self.times[i]), self.y(values[i]))
-                if i == start or self.times[i]-self.times[i-1] > self.interval*1.1:
-                    path.moveTo(point)
-                else:
-                    path.lineTo(point)
-            p.setPen(QPen(QColor(setting["color"]), setting["width"]))
-            p.drawPath(path)
-        p.restore()
-        self.draw_objects(p)
+        self.draw_object_layer(p)
         if self.last_price:
-            self.price_label(p, self.last_price, f"{self.last_price:,.7g}", color("text_muted" if self.price_stale else "positive"))
+            # 与最新 K 线的开盘价比较，不受鼠标悬停或历史视口影响。
+            direction = "positive" if self.last_price >= self.values[-1][0] else "negative"
+            self.price_label(p, self.last_price, f"{self.last_price:,.7g}",
+                             color("text_muted" if self.price_stale else direction))
         self.draw_overlays(p, main)
         if cursor and main.left() <= cursor.x() <= main.right() and main.top() <= cursor.y() <= volume.bottom():
             x = cursor.x()

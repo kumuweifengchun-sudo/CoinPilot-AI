@@ -1,9 +1,9 @@
 """工作台共用控件。"""
 from datetime import datetime
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import (QAbstractItemView, QDialog, QDialogButtonBox, QHeaderView, QLabel,
-                            QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout)
+from PyQt6.QtCore import Qt, QSignalBlocker
+from PyQt6.QtWidgets import (QAbstractItemView, QComboBox, QDialog, QDialogButtonBox, QHeaderView, QLabel,
+                            QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit, QVBoxLayout)
 from ..icons import set_button_icon
 from ..theme import style_sheet
 
@@ -26,7 +26,40 @@ def button(text, callback, primary=False):
     return widget
 
 
-def table(headers):
+class AccountTabs(QTabWidget):
+    """窄面板用分类选择器，避免标签挤压与不可辨认的滚动箭头。"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.selector = QComboBox()
+        self.selector.setAccessibleName('账户信息分类')
+        self.selector.hide()
+        self.selector.currentIndexChanged.connect(self.setCurrentIndex)
+        self.currentChanged.connect(self._selected)
+
+    def addTab(self, widget, *args):
+        index = super().addTab(widget, *args)
+        with QSignalBlocker(self.selector):
+            self.selector.addItem(self.tabText(index))
+            self.selector.setCurrentIndex(self.currentIndex())
+        self._fit()
+        return index
+
+    def _selected(self, index):
+        with QSignalBlocker(self.selector):
+            self.selector.setCurrentIndex(index)
+
+    def _fit(self):
+        required = sum(self.fontMetrics().horizontalAdvance(self.tabText(i)) + 36 for i in range(self.count()))
+        compact = self.width() < required
+        self.tabBar().setVisible(not compact)
+        self.selector.setVisible(compact)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._fit()
+
+
+def table(headers, *, readable=False):
     widget = QTableWidget(0, len(headers))
     widget.setHorizontalHeaderLabels(headers)
     widget.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -36,7 +69,15 @@ def table(headers):
     widget.verticalHeader().setDefaultSectionSize(34)
     widget.setWordWrap(False)
     widget.verticalHeader().hide()
-    widget.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+    header = widget.horizontalHeader()
+    header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive if readable else QHeaderView.ResizeMode.Stretch)
+    if readable:
+        header.setMinimumSectionSize(80)
+        header.setStretchLastSection(True)
+        for index, text in enumerate(headers):
+            width = max(100, widget.fontMetrics().horizontalAdvance(text) + 32)
+            widget.setColumnWidth(index, max(width, 155) if text == '合约' else width)
+        widget.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
     widget.setMinimumHeight(110)
     return widget
 
@@ -48,6 +89,7 @@ def fill_table(widget, rows):
     for i, (identity, values) in enumerate(rows):
         for j, value in enumerate(values):
             item = QTableWidgetItem(str(value))
+            item.setToolTip(str(value))
             if j == 0:
                 item.setData(Qt.ItemDataRole.UserRole, identity)
             widget.setItem(i, j, item)

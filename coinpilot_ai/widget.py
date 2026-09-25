@@ -16,6 +16,7 @@ from .visuals import Quote, draw_ticker, font, render_hints, ticker_size
 class CoinPilotWidget(QWidget):
     workbench_requested = pyqtSignal()
     configuration_changed = pyqtSignal(object)
+    update_requested = pyqtSignal()
     visibility_changed = pyqtSignal(bool)
 
     def __init__(self, config, store, client=None, start_requests=True, startup=None):
@@ -41,6 +42,7 @@ class CoinPilotWidget(QWidget):
         self.unread_events = 0
         self._minimum_content_width = 0
         self.settings_dialog = None
+        self.settings_router = None
         self.hotkey = None
         self._settings_hidden = False
         self.setWindowTitle("CoinPilot AI · 币航")
@@ -172,7 +174,7 @@ class CoinPilotWidget(QWidget):
         mode = SOURCE_LABELS[self.config.get("price_source", "auto")]
         details = f"\n失败原因：{quote.error}" if quote.error else ""
         self.setToolTip(f"{quote.symbol}\n{quote.status_text()}\n报价来源：{origin} · 当前模式：{mode}"
-                       f"{details}\n单击刷新 · 长按拖动 · 右键打开设置\n{shortcut} 隐藏／显示"
+                       f"{details}\n单击刷新 · 双击打开交易台\n长按拖动 · 右键打开设置\n{shortcut} 隐藏／显示"
                        + (f"\n工作台有 {self.unread_events} 条新提醒" if self.unread_events else ""))
 
     def set_unread_events(self, count):
@@ -281,6 +283,15 @@ class CoinPilotWidget(QWidget):
             self._drag_pos = self._pointer_pos - self.frameGeometry().topLeft()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
 
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and not self._closed:
+            # 双击的第二次按下不再进入拖动，也不在随后松开时再次刷新。
+            self._cancel_pointer()
+            event.accept()
+            self.workbench_requested.emit()
+        else:
+            super().mouseDoubleClickEvent(event)
+
     def _cancel_pointer(self):
         self.hold_timer.stop()
         self._drag_pos = self._press_pos = self._pointer_pos = None
@@ -320,26 +331,27 @@ class CoinPilotWidget(QWidget):
         menu = QMenu(self)
         menu.setFont(font(11))
         menu.setStyleSheet(menu_style() + "QMenu {font-size:11px;} QMenu::item {padding:6px 24px 6px 10px;}")
-        mini = menu.addAction("迷你模式")
-        mini.setIcon(icon("mini"))
-        mini.setCheckable(True)
-        mini.setChecked(self.config.get("mini_mode", True))
-        mini.triggered.connect(self.set_mini_mode)
-        source_menu = menu.addMenu("行情数据源")
-        source_menu.setIcon(icon("activity"))
-        source_menu.setFont(font(11))
-        source_group = QActionGroup(source_menu)
-        source_group.setExclusive(True)
-        for source, label in SOURCE_LABELS.items():
-            source_action = source_menu.addAction(label)
-            source_action.setCheckable(True)
-            source_action.setChecked(source == self.config.get("price_source", "auto"))
-            source_group.addAction(source_action)
-            source_action.triggered.connect(lambda checked, value=source: self.set_price_source(value))
+        if self.settings_router is None:  # 工作台不可用时保留独立窗口的恢复入口。
+            mini = menu.addAction("迷你模式")
+            mini.setIcon(icon("mini"))
+            mini.setCheckable(True)
+            mini.setChecked(self.config.get("mini_mode", True))
+            mini.triggered.connect(self.set_mini_mode)
+            source_menu = menu.addMenu("行情数据源")
+            source_menu.setIcon(icon("activity"))
+            source_menu.setFont(font(11))
+            source_group = QActionGroup(source_menu)
+            source_group.setExclusive(True)
+            for source, label in SOURCE_LABELS.items():
+                source_action = source_menu.addAction(label)
+                source_action.setCheckable(True)
+                source_action.setChecked(source == self.config.get("price_source", "auto"))
+                source_group.addAction(source_action)
+                source_action.triggered.connect(lambda checked, value=source: self.set_price_source(value))
         settings = menu.addAction("设置")
         settings.setIcon(icon("settings"))
         settings.triggered.connect(self.open_settings)
-        workbench = menu.addAction("打开交易工作台" + (f"（{self.unread_events} 条新提醒）" if self.unread_events else ""))
+        workbench = menu.addAction("交易台" + (f"（{self.unread_events} 条新提醒）" if self.unread_events else ""))
         workbench.setIcon(icon("workbench"))
         workbench.triggered.connect(self.workbench_requested.emit)
         menu.addSeparator()
@@ -355,6 +367,9 @@ class CoinPilotWidget(QWidget):
         menu.deleteLater()
 
     def open_settings(self):
+        if self.settings_router is not None:
+            self.settings_router()
+            return
         if self.settings_dialog is not None:
             self.settings_dialog.showNormal()
             self.settings_dialog.raise_()

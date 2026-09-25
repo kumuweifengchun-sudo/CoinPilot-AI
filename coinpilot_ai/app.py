@@ -6,16 +6,17 @@ import sys
 import sqlite3
 
 from PyQt6.QtCore import QCoreApplication, QEvent, QLibraryInfo, QLocale, QTimer, QTranslator, Qt
-from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from .config import ICON_CACHE_DIR, SETTINGS_FILE, SettingsStore
+from .icons import application_icon
 from .network import MarketClient
 from .hotkey import GlobalHotkey
 from .startup import StartupManager
 from .visuals import font, load_fonts, resource_path
 from .widget import CoinPilotWidget
 from .theme import activate_theme, palette, style_sheet
+from .version import VERSION
 
 _diagnostic_file = None
 
@@ -25,14 +26,16 @@ def create_application(argv):
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(argv)
     app.setApplicationName("CoinPilot AI")
-    app.setApplicationDisplayName("CoinPilot AI · 币航")
+    app.setApplicationVersion(VERSION)
+    # 使用各窗口自己的标题，避免 Windows 再追加一遍应用名称。
+    app.setApplicationDisplayName("")
     app.setOrganizationName("CoinPilotAI")
     app.setStyle("Fusion")
     app.inter_font_loaded = load_fonts()
     app.setPalette(palette())
     app.setStyleSheet(style_sheet())
     app.setFont(font(13))
-    app.setWindowIcon(QIcon(str(resource_path("coinpilot-ai.ico"))))
+    app.setWindowIcon(application_icon())
     QLocale.setDefault(QLocale("zh_CN"))
     translator = QTranslator(app)
     if translator.load("qtbase_zh_CN", QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)):
@@ -44,8 +47,9 @@ def create_application(argv):
 def main(argv=None):
     parser = argparse.ArgumentParser(description="CoinPilot AI · 币航 — AI 加密交易工作台", add_help=False)
     parser.add_argument("-h", "--help", action="help", help="显示帮助信息")
+    parser.add_argument("--version", action="version", version=f"CoinPilot AI {VERSION}", help="显示版本号")
     parser.add_argument("--settings", action="store_true", help="启动后打开设置")
-    parser.add_argument("--workbench", action="store_true", help="启动后打开交易工作台，保留迷你窗口")
+    parser.add_argument("--workbench", action="store_true", help="启动后打开交易台，保留迷你窗口")
     parser.add_argument("--config", type=Path, default=SETTINGS_FILE, help="配置文件路径")
     parser.add_argument("--cache-dir", type=Path, default=ICON_CACHE_DIR, help="图标缓存目录")
     parser.add_argument("--quit-after", type=int, default=0, help=argparse.SUPPRESS)
@@ -84,10 +88,12 @@ def run_instance(app, args):
     activate_theme(config["ui_theme"])
     client = MarketClient(args.cache_dir, parent=app)
     widget = CoinPilotWidget(config, store, client, startup=StartupManager(args.config, args.cache_dir))
+    from .update_ui import UpdateController
+    app.updater = UpdateController(app, widget, args.cache_dir, automatic=args.quit_after <= 0)
     startup_warning = store.warning
     from .cockpit.desktop import DesktopController
     try:
-        app.desktop = DesktopController(app, widget, args.config, args.cache_dir)
+        app.desktop = DesktopController(app, widget, args.config, args.cache_dir, updater=app.updater)
         startup_warning = "\n".join(part for part in (startup_warning, app.desktop.warning) if part)
     except (OSError, ValueError, sqlite3.Error) as exc:
         startup_warning = "\n".join(part for part in (startup_warning, "工作台启动失败，迷你窗口仍可使用：" + str(exc)) if part)

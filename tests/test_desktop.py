@@ -101,12 +101,16 @@ def test_tray_restore_pause_badge_and_service_fallback(app, tmp_path, monkeypatc
     widget = CoinPilotWidget(dict(DEFAULT_CONFIG), SettingsStore(tmp_path / "settings.json"), start_requests=False)
     controller = desktop.DesktopController(app, widget, widget.store.path, tmp_path / "icons")
     try:
+        assert controller.workbench_action.text() == "交易台"
+        assert all(len(action.text()) <= 4 for action in controller.menu.actions() if not action.isSeparator())
         widget.hide()
         controller.activated(QSystemTrayIcon.ActivationReason.Trigger)
         QTest.qWait(app.doubleClickInterval()+30)
         assert widget.isVisible()
-        assert controller.visibility_action.text() == "隐藏迷你窗口"
+        assert controller.visibility_action.text() == "隐藏小窗"
         controller.pause_action.setChecked(True)
+        assert controller.status_action.text() == "通知暂停"
+        assert all(len(action.text()) <= 4 for action in controller.menu.actions() if not action.isSeparator())
         assert service.settings["notifications_paused"]
         controller.notify("x", {"name": "提醒", "priority": "market"})
         assert "1 条未读提醒" in controller.tray.toolTip()
@@ -134,6 +138,8 @@ def test_tray_restore_pause_badge_and_service_fallback(app, tmp_path, monkeypatc
     try:
         assert controller.tray.isVisible() and controller.service is None
         assert controller.warning and not controller.workbench_action.isEnabled()
+        assert controller.status_action.text() == "服务异常"
+        assert all(len(action.text()) <= 4 for action in controller.menu.actions() if not action.isSeparator())
         controller.show_mini()
         assert fallback.isVisible()
     finally:

@@ -5,11 +5,13 @@
 import json
 import math
 import time
+from bisect import bisect_left
 
-from PyQt6.QtCore import QObject, QTimer, QUrl
+from PyQt6.QtCore import QObject, QTimer, QUrl, pyqtSignal
 from PyQt6.QtWebSockets import QWebSocket
 
 from .chart_state import BARS
+from .chart_series import ChartSeries
 
 
 def valid_candles(rows):
@@ -128,6 +130,8 @@ class CandleStream(QObject):
 
 
 class ChartFeed(QObject):
+    series_changed = pyqtSignal(object)
+
     def __init__(self, service):
         super().__init__(service)
         self.service = service
@@ -140,6 +144,35 @@ class ChartFeed(QObject):
         self.stream = None
         self.repairs = {}
         self.window_attempts = {}
+        self.series = {}
+        self.raw_indexes = {}
+        service.chart_book.changed.connect(self.settings_changed)
+
+    def settings_changed(self, kind, _key):
+        if kind == "ema":
+            periods = [e["period"] for e in self.service.chart_book.emas]
+            for series in self.series.values():
+                series.set_periods(periods)
+
+    def raw_index(self, pair):
+        rows = self.service.candles.get(pair)
+        cached = self.raw_indexes.get(pair)
+        if cached is None or cached[0] is not rows:
+            times = [int(r[0]) for r in rows] if rows else []
+            cached = (rows, times, dict(zip(times, rows or [])))
+            self.raw_indexes[pair] = cached
+        return cached
+
+    def get_series(self, pair):
+        series = self.series.get(pair)
+        if series is None:
+            series = ChartSeries(pair, [e["period"] for e in self.service.chart_book.emas], self)
+            series.changed.connect(self.series_changed)
+            self.series[pair] = series
+        rows = self.service.candles.get(pair)
+        if rows is not None and series.source is not rows:
+            series.update(rows, 0, structural=True)
+        return series
 
     def activate(self):
         if self.service.closed:
@@ -161,7 +194,12 @@ class ChartFeed(QObject):
 
     def merge(self, pair, rows, *, fresh=False, started=None):
         s = self.service
-        old = {int(row[0]): row for row in s.candles.get(pair, [])}
+        if pair not in s.candles:
+            s.candles[pair] = []
+        ordered, times, old = self.raw_index(pair)
+        original_count, first = len(ordered), len(ordered)
+        additions = {}
+        changed = False
         for row in rows:
             stamp = int(row[0])
             previous = old.get(stamp)
@@ -170,11 +208,34 @@ class ChartFeed(QObject):
             if started is not None and self.stream_versions.get((pair, stamp), 0) > started:
                 if str(row[8]) != "1" or (previous and str(previous[8]) == "1"):
                     continue
+            if previous == row:
+                continue
+            row = list(row)  # 发布后的行不原地修改，分片快照可安全复用。
+            if previous is None or stamp in additions:
+                additions[stamp] = row
+            else:
+                index = bisect_left(times, stamp)
+                ordered[index] = row
+                first = min(first, index)
             old[stamp] = row
-        ordered = [old[t] for t in sorted(old)]
-        if ordered != s.candles.get(pair, []):
-            s.candles[pair] = ordered
+            changed = True
+        # 按插入位置成组拷贝，追加/前补各只移动一次列表；不对全部历史排序。
+        groups = {}
+        for stamp in sorted(additions):
+            index = bisect_left(times, stamp)
+            groups.setdefault(index, []).append(stamp)
+            first = min(first, index)
+        structural = any(index < original_count for index in groups)
+        for index, stamps in reversed(list(groups.items())):
+            times[index:index] = stamps
+            ordered[index:index] = [additions[t] for t in stamps]
+        if changed:
             self.revisions[pair] = self.revisions.get(pair, 0) + 1
+            series = self.series.get(pair)
+            if series is None or series.source is not ordered:
+                self.get_series(pair)
+            else:
+                series.update(ordered, first, structural=structural)
         if fresh and ordered and rows and int(rows[-1][0]) >= int(ordered[-1][0]) and pair not in self.repairs:
             latest = int(ordered[-1][0]) / 1000
             if -5 <= time.time() - latest <= BARS[pair[1]] + 30:
@@ -269,7 +330,7 @@ class ChartFeed(QObject):
         offset = int(rows[0][0]) % interval
         begin = math.floor((left-offset)/interval)*interval+offset
         end = min(int(rows[-1][0]), left+count*interval)
-        stamps = {int(r[0]) for r in rows}
+        stamps = self.raw_index(pair)[2]
         missing = next((t for t in range(int(begin), int(end)+1, interval) if t not in stamps), None)
         if missing is None:
             return
@@ -306,6 +367,11 @@ class ChartFeed(QObject):
 
     def reset(self):
         self.generation += 1
+        for series in self.series.values():
+            series.cancel()
+            series.deleteLater()
+        self.series.clear()
+        self.raw_indexes.clear()
         self.pending.clear()
         self.history_state.clear()
         self.stream_versions.clear()

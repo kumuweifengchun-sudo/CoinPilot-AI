@@ -331,7 +331,7 @@ def test_hide_and_shutdown_cancel_pending_hold(widget, app, monkeypatch):
 def test_compact_menu_actions_and_submenu(widget):
     menu = widget._create_context_menu()
     assert [action.text() for action in menu.actions() if not action.isSeparator()] == [
-        "迷你模式", "行情数据源", "设置", "打开交易工作台", "退出"]
+        "迷你模式", "行情数据源", "设置", "交易台", "退出"]
     assert menu.font().pixelSize() == 11
     source_menu = menu.actions()[1].menu()
     assert source_menu.font().pixelSize() == 11

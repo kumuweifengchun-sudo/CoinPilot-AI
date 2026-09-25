@@ -48,6 +48,13 @@ class Store:
                             (scope, kind, key, encode(value), time.time()))
         return key
 
+    def put_many(self, records, scope):
+        """账户状态和成交记录在同一事务提交，避免半笔本地成交。"""
+        rows = [(scope, kind, str(key), encode(value), time.time()) for kind, key, value in records]
+        with self.db:
+            self.db.executemany("INSERT INTO records VALUES(?,?,?,?,?) ON CONFLICT(scope,kind,id) "
+                                "DO UPDATE SET body=excluded.body,updated=excluded.updated", rows)
+
     def get(self, kind, key, default=None, scope="global"):
         row = self.db.execute("SELECT body FROM records WHERE scope=? AND kind=? AND id=?",
                               (scope, kind, str(key))).fetchone()

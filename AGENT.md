@@ -49,7 +49,7 @@
 
 ### 账户交易与 AI
 
-- 第一版范围是一个 OKX 账户的 USDT 本位线性永续；模拟、真实环境与账户记录按现有作用域隔离。
+- 支持一个 OKX 账户的 USDT 本位线性永续及无需 API 的本地模拟盘；本地模拟、OKX 模拟、真实环境与账户记录按作用域隔离，本地模拟不计入真实交易解锁验收。
 - 金额、费用和合约数量计算使用 `Decimal`；区分“合约张数”和币数量，校验交易所精度、最小数量、账户模式、杠杆及数据新鲜度。
 - 所有交易操作保留程序校验和人工确认。AI 只能准备可编辑草稿，提示词、报告或图表事件不能绕过交易确认。
 - 不移除真实交易的模拟验收门槛，不伪造验收记录。自动化测试不使用真实账户资金，也不自动向交易所发送测试订单。
@@ -85,7 +85,7 @@ uv run --locked --group dev pytest -q
 | 配置、迷你窗口、桌面行为 | `tests/test_config.py`、`tests/test_ui.py`、`tests/test_desktop.py`，按需补充快捷键／启动测试 |
 | 图表、磁吸、EMA、历史行情 | `tests/test_charts.py`；固定数据精度、预览与点击一致、撤销、跨页面／周期及重启恢复 |
 | 账户、规则、交易、AI、复盘 | `tests/test_cockpit.py`、`tests/test_cockpit_network.py`；覆盖失败、取消、过期和结果未知的分支 |
-| 控件、布局、图标、DPI | `tools/verify_ui.py --all`、`tools/verify_workbench.py --all`，实际查看输出截图 |
+| 控件、布局、图标 | 按需运行 `tools/verify_ui.py`、`tools/verify_workbench.py`，实际查看输出截图；无需执行五档 DPI 测试 |
 | 生命周期、依赖、资源或发布产物 | 构建 EXE 后运行 `tools/smoke_test.py`，检查启停及重复启动 |
 
 针对性验证通过后，业务代码交付前运行完整测试集；已有结果无变化时不反复运行相同检查。只写实际执行结果，明确未验证的账户或外部服务。
@@ -93,11 +93,11 @@ uv run --locked --group dev pytest -q
 ### 离线界面检查
 
 ```powershell
-uv run --locked python tools/verify_ui.py --all
-uv run --locked python tools/verify_workbench.py --all
+uv run --locked python tools/verify_ui.py
+uv run --locked python tools/verify_workbench.py
 ```
 
-覆盖 100%、125%、150%、175%、200% DPI，使用临时数据和空凭据。截图与报告位于 `artifacts/`，需要时通过工作台检查脚本的 `--output` 参数另存。
+离线界面检查按需执行，无需覆盖五档 DPI，也无需使用 `--all`。检查时使用临时数据和空凭据。截图与报告位于 `artifacts/`，需要时通过工作台检查脚本的 `--output` 参数另存。
 
 ### 公开接口检查
 

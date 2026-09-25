@@ -1,8 +1,8 @@
-"""离线 SVG 图标；按控件状态着色并由 Qt 以实际 DPI 渲染。"""
+"""多尺寸应用标志与按控件状态着色的离线 SVG 功能图标。"""
 from functools import lru_cache
 
 from PyQt6.QtCore import QByteArray, QRectF, QSize, Qt
-from PyQt6.QtGui import QIcon, QIconEngine, QPainter, QPixmap
+from PyQt6.QtGui import QColor, QIcon, QIconEngine, QPainter, QPixmap
 from PyQt6.QtSvg import QSvgRenderer
 
 from .visuals import resource_path
@@ -18,8 +18,15 @@ ALIASES = {
 CUSTOM = {
     "trend": '<path d="M5 18 19 6"/><circle cx="5" cy="18" r="2"/><circle cx="19" cy="6" r="2"/>',
     "fib": '<path d="M4 4h16M4 10h12M4 15h16M4 20h10M4 4v16"/>',
-    "brand": '<path d="M5 6v12M12 3v18M19 8v10"/><rect x="3" y="9" width="4" height="5" rx="1"/><rect x="10" y="6" width="4" height="9" rx="1"/><rect x="17" y="11" width="4" height="4" rx="1"/>',
 }
+
+APP_ICON_PATH = "coinpilot_ai/assets/app_icon/app.ico"
+APP_ICON_SIZES = (16, 32, 64, 128, 256)
+
+
+@lru_cache(maxsize=1)
+def application_icon():
+    return QIcon(str(resource_path(APP_ICON_PATH)))
 
 
 class SvgIconEngine(QIconEngine):
@@ -57,12 +64,41 @@ class SvgIconEngine(QIconEngine):
 
 @lru_cache(maxsize=160)
 def icon(name, color=None):
+    if name == "brand":
+        return application_icon()
     name = ALIASES.get(name, name)
     if name in CUSTOM:
         source = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">' + CUSTOM[name] + '</svg>'
     else:
         source = resource_path(f"coinpilot_ai/assets/lucide/{name}.svg").read_text(encoding="utf-8")
     return QIcon(SvgIconEngine(source, color))
+
+
+def brand_pixmap(size=64, *, badge=None):
+    """保留原始应用标志颜色；badge 为可选的托盘状态颜色令牌。"""
+    from .theme import color as theme_color
+
+    # 构造真实像素帧；不能让当前屏幕 DPR 改写托盘可用尺寸。
+    pixmap = application_icon().pixmap(QSize(size, size), 1.0)
+    if not badge:
+        return pixmap
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.scale(size / 64, size / 64)
+    painter.setBrush(QColor(theme_color(badge)))
+    painter.setPen(QColor(theme_color("surface_raised")))
+    painter.drawEllipse(45, 3, 16, 16)
+    painter.end()
+    return pixmap
+
+
+def tray_icon(badge=None):
+    if not badge:
+        return application_icon()
+    result = QIcon()
+    for size in APP_ICON_SIZES:
+        result.addPixmap(brand_pixmap(size, badge=badge))
+    return result
 
 
 def set_button_icon(button, name, *, size=16, color=None):

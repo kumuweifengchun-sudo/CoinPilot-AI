@@ -117,13 +117,17 @@ QToolTip { color: ${text}; background: ${tooltip}; border: 1px solid ${border_st
 
 _STYLE = Template("""
 QMainWindow, QDialog, QWidget#workbenchRoot { background: ${background}; }
+QDockWidget { border: 1px solid ${border}; }
+QDockWidget::title { background: ${surface_raised}; padding: 6px; color: ${text_secondary}; }
+QDockWidget::close-button, QDockWidget::float-button { padding: 2px; background: ${surface_hover}; }
+QDockWidget::close-button:hover, QDockWidget::float-button:hover { background: ${border_strong}; }
+QMainWindow::separator { background: ${border}; width: 5px; height: 5px; }
+QMainWindow::separator:hover { background: ${border_strong}; }
 QWidget { color: ${text_secondary}; font-family: 'Inter Variable', 'Microsoft YaHei UI'; font-size: 12px; }
 QLabel { background: transparent; border: none; }
 QLabel#title { font-size: 18px; font-weight: 600; color: ${text}; }
 QLabel#muted { color: ${text_muted}; }
-QLabel#eyebrow { color: ${text_muted}; font-size: 10px; letter-spacing: 2px; }
 QLabel#sectionTitle { font-size: 13px; font-weight: 600; color: ${text}; padding: 4px 0; }
-QLabel#brandMark { background: ${surface_raised}; border: 1px solid ${border}; border-radius: 8px; }
 QWidget#sidePanel { background: ${surface}; border: 1px solid ${border}; border-radius: 8px; }
 QWidget#tradeFormContent { background: ${surface}; }
 QTabWidget::pane { border: 1px solid ${border}; background: ${surface}; border-radius: 6px; top: -1px; }

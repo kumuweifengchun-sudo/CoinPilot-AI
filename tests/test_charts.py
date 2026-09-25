@@ -15,7 +15,8 @@ from coinpilot_ai.config import DEFAULT_CONFIG
 from coinpilot_ai.cockpit.chart import CandleChart
 from coinpilot_ai.cockpit.chart_dialogs import DrawingDialog, EmaDialog
 from coinpilot_ai.cockpit.chart_feed import CandleStream, valid_candles
-from coinpilot_ai.cockpit.chart_state import ChartBook, drawing, ema_values, trade_lines
+from coinpilot_ai.cockpit.chart_state import OBJECT_NAMES, ChartBook, drawing, ema_values, trade_lines
+from coinpilot_ai.cockpit.chart_series import ChartSeries
 from coinpilot_ai.cockpit.service import CockpitService
 from coinpilot_ai.cockpit.store import Store
 from coinpilot_ai.cockpit.transport import ApiError
@@ -122,9 +123,22 @@ def test_tools_create_edit_lock_delete_undo_redo(chart, app, monkeypatch, tool):
     if tool not in ("horizontal", "vertical", "text"):
         QTest.mouseClick(chart, Qt.MouseButton.LeftButton, pos=QPoint(500, 240))
     assert len(chart.objects) == 1
+    first = deepcopy(chart.objects[0])
+    assert chart.tool == tool and chart.preview is None
+    QTest.mouseClick(chart, Qt.MouseButton.LeftButton, pos=QPoint(340, 180))
+    if tool not in ('horizontal', 'vertical', 'text'):
+        QTest.mouseClick(chart, Qt.MouseButton.LeftButton, pos=QPoint(550, 275))
+    if chart.draw_click_timer.isActive():
+        QTest.qWait(app.doubleClickInterval()+60)
+    assert len(chart.objects) == 2 and chart.objects[0] == first
+    assert chart.objects[1]['id'] != first['id']
+    QTest.keyClick(chart, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    assert chart.objects == [first] and chart.tool == tool
     chart.repaint()
     obj = chart.objects[0]
     before = deepcopy(obj["anchors"])
+    chart.set_tool('cursor')
+    chart.selected_id = obj['id']
     anchor = chart.point(obj["anchors"][0])
     drag(chart, (int(anchor.x()), int(anchor.y())), (int(anchor.x()+25), int(anchor.y()+15)))
     assert chart.objects[0]["anchors"] != before
@@ -149,6 +163,53 @@ def test_cancel_drawing_and_move_do_not_write_partial_changes(chart):
     QTest.keyClick(chart, Qt.Key.Key_Escape)
     assert chart.preview is None and not chart.objects
     assert not chart.book.objects("demo", chart.instrument)
+
+
+def test_objects_multiselect_delete_skips_locked_and_undo_restores_batch(chart, app):
+    from coinpilot_ai.cockpit.chart_dialogs import ObjectsDialog
+    objects = [drawing('trend', [[chart.times[-70], 100+i], [chart.times[-20], 102+i]]) for i in range(5)]
+    objects[-1]['locked'] = True
+    chart.objects = deepcopy(objects)
+    chart.persist_objects()
+    objects = deepcopy(chart.objects)
+    dialog = ObjectsDialog(chart)
+    dialog.show()
+    app.processEvents()
+    try:
+        def select(row, modifiers=Qt.KeyboardModifier.NoModifier):
+            QTest.mouseClick(dialog.items.viewport(), Qt.MouseButton.LeftButton, modifiers,
+                             dialog.items.visualItemRect(dialog.items.item(row)).center())
+        select(0)
+        select(2, Qt.KeyboardModifier.ControlModifier)
+        assert len(dialog.identities()) == 2
+        select(4, Qt.KeyboardModifier.ShiftModifier)
+        assert dialog.identities() == {objects[i]['id'] for i in (0, 2, 3, 4)}
+        assert not dialog.edit_button.isEnabled()
+        QTest.keyClick(dialog.items, Qt.Key.Key_Delete)
+        remaining = [objects[1], objects[4]]
+        assert chart.objects == remaining
+        assert ChartBook(chart.service.store).objects('demo', chart.instrument) == remaining
+        assert '保留 1 个锁定对象' in dialog.feedback.text()
+        assert dialog.identities() == {objects[4]['id']}
+        # 只剩锁定项时不产生空撤销记录；一次撤销恢复整批。
+        dialog.delete()
+        chart.book.undo('demo', chart.instrument)
+        assert chart.objects == objects
+        chart.book.undo('demo', chart.instrument, redo=True)
+        assert chart.objects == remaining
+        dialog.reload()
+        QTest.keyClick(dialog.items, Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier)
+        assert len(dialog.identities()) == 2
+        dialog.toggle('locked')
+        assert len(dialog.identities()) == 2 and all(o['locked'] for o in chart.objects)
+        dialog.toggle('locked')
+        assert all(not o['locked'] for o in chart.objects)
+        dialog.delete_button.click()
+        assert not chart.objects and not dialog.delete_button.isEnabled()
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+        app.processEvents()
 
 
 def test_shared_drawings_view_and_global_ema_survive_restart(chart, service, app):
@@ -176,6 +237,97 @@ def test_shared_drawings_view_and_global_ema_survive_restart(chart, service, app
     app.processEvents()
 
 
+def test_drawing_names_migrate_and_reuse_numbers_after_deletion_and_restart(service):
+    legacy = [drawing(tool, [[1700000000000, 100], [1700000900000, 101]])
+              for tool in ('trend', 'trend', 'horizontal')]
+    inst = service.selected
+    service.store.put('chart_drawings', inst, legacy, 'demo')
+    service.store.put('chart_drawing_names', inst, {'trend': 99, 'horizontal': 20}, 'demo')
+    book = ChartBook(service.store)
+    rows = book.objects('demo', inst)
+    assert [o['name'] for o in rows] == ['趋势线1', '趋势线2', '水平线1']
+    assert [o['anchors'] for o in rows] == [o['anchors'] for o in legacy]
+    rows[0]['name'] = '日线支撑'
+    book.save_objects('demo', inst, rows)
+    book.save_objects('demo', inst, [])
+    reopened = ChartBook(service.store)
+    created = [drawing('trend', legacy[0]['anchors'])]
+    reopened.save_objects('demo', inst, created)
+    assert created[0]['name'] == '趋势线1'
+    assert ChartBook(service.store).objects('demo', inst) == created
+    for environment, instrument in (('live', inst), ('demo', 'ETH-USDT-SWAP')):
+        fresh = [drawing('trend', legacy[0]['anchors'])]
+        reopened.save_objects(environment, instrument, fresh)
+        assert fresh[0]['name'] == '趋势线1'
+    collision = [dict(created[0], name='趋势线8'), drawing('trend', legacy[0]['anchors'])]
+    reopened.save_objects('demo', inst, collision)
+    assert [o['name'] for o in collision] == ['趋势线8', '趋势线1']
+
+
+@pytest.mark.parametrize('tool', [tool for tool in OBJECT_NAMES if tool != 'cursor'])
+def test_drawing_names_reuse_gaps_and_preserve_undo_redo(service, tool):
+    book, inst = service.chart_book, service.selected
+    anchors = [[1700000000000, 100], [1700000900000, 101]]
+    rows = [drawing(tool, anchors) for _ in range(3)]
+    book.save_objects('demo', inst, rows)
+    original = deepcopy(rows)
+    # 隐藏、锁定的对象仍占用名称；删除中间对象后不重排现有名称。
+    rows = [dict(rows[0], hidden=True), dict(rows[2], locked=True)]
+    book.save_objects('demo', inst, rows)
+    book.undo('demo', inst)
+    assert book.objects('demo', inst) == original
+    book.undo('demo', inst, redo=True)
+    assert book.objects('demo', inst) == rows
+    remaining = deepcopy(rows)
+    rows.extend(drawing(tool, anchors) for _ in range(2))
+    book.save_objects('demo', inst, rows)
+    prefix = OBJECT_NAMES[tool]
+    assert [o['name'] for o in rows] == [prefix+str(i) for i in (1, 3, 2, 4)]
+    book.undo('demo', inst)
+    assert book.objects('demo', inst) == remaining
+    book.undo('demo', inst, redo=True)
+    assert book.objects('demo', inst) == rows
+    assert ChartBook(service.store).objects('demo', inst) == rows
+    rows[0]['name'] = '自定义名称'
+    book.save_objects('demo', inst, rows)
+    rows.append(drawing(tool, anchors))
+    book.save_objects('demo', inst, rows)
+    assert rows[0]['name'] == '自定义名称'
+    assert rows[-1]['name'] == prefix+'1'
+
+
+def test_object_rename_persistence_undo_and_empty_name(chart, monkeypatch):
+    from coinpilot_ai.cockpit import chart_dialogs as module
+    chart.objects = [drawing('trend', [[chart.times[-60]+.123, 100.1234567890123], [chart.times[-20], 102]])]
+    chart.persist_objects()
+    original = deepcopy(chart.objects[0])
+    def save(dialog):
+        assert dialog.name.text() == '趋势线1'
+        dialog.name.setText('  日线压力线  ')
+        dialog.accept()
+        return dialog.result()
+    monkeypatch.setattr(module.DrawingDialog, 'exec', save)
+    module.edit_drawing(chart, original['id'], chart)
+    assert chart.objects[0]['name'] == '日线压力线'
+    assert chart.objects[0]['id'] == original['id']
+    assert chart.objects[0]['anchors'] == original['anchors']
+    assert ChartBook(chart.service.store).objects('demo', chart.instrument)[0]['name'] == '日线压力线'
+    manager = module.ObjectsDialog(chart)
+    assert manager.items.item(0).text().startswith('日线压力线')
+    manager.deleteLater()
+    chart.book.undo('demo', chart.instrument)
+    assert chart.objects[0]['name'] == '趋势线1'
+    chart.book.undo('demo', chart.instrument, redo=True)
+    assert chart.objects[0]['name'] == '日线压力线'
+    dialog = module.DrawingDialog(chart.objects[0])
+    dialog.name.setText('  ')
+    dialog.accept()
+    assert not dialog.result() and '名称' in dialog.error.text()
+    dialog.reject()
+    assert chart.objects[0]['name'] == '日线压力线'
+    dialog.deleteLater()
+
+
 def test_ema_numerical_values_and_view_independence(chart):
     assert ema_values([1, 2, 3, 4], 3) == [1, 1.5, 2.25, 3.125]
     before = deepcopy(chart.ema_cache)
@@ -183,6 +335,206 @@ def test_ema_numerical_values_and_view_independence(chart):
     chart.latest()
     chart.repaint()
     assert chart.ema_cache == before
+
+
+def test_region_fill_render_undo_and_restart(chart, service, app, monkeypatch):
+    from PyQt6.QtGui import QColor
+    from coinpilot_ai.cockpit.chart import QColorDialog
+    corners = [QPointF(260, 170), QPointF(560, 170), QPointF(410, 310)]
+    chart.objects = [drawing('trend', [chart.anchor(a), chart.anchor(b)])
+                     for a, b in zip(corners, corners[1:]+corners[:1])]
+    chart.persist_objects()
+    point = QPointF(410, 230)
+    anchors = chart.region_at(point)
+    assert len(anchors) == 3
+    before = chart.grab().toImage().pixelColor(point.toPoint())
+    monkeypatch.setattr(QColorDialog, 'getColor', lambda *_: QColor('#ff0000'))
+    chart.fill_region(anchors)
+    obj = chart.objects[-1]
+    assert obj['tool'] == 'region' and obj['fill_opacity'] == 20
+    assert chart.grab().toImage().pixelColor(point.toPoint()) != before
+    assert chart.hit_test(point)[0] == obj['id']
+    chart.zoom_time(.8, 410)
+    chart.repaint()
+    assert chart.objects[-1]['anchors'] == anchors
+    reloaded = ChartBook(service.store)
+    assert reloaded.objects('demo', chart.instrument)[-1] == obj
+    chart.book.undo('demo', chart.instrument)
+    assert len(chart.objects) == 3
+    chart.book.undo('demo', chart.instrument, redo=True)
+    assert chart.objects[-1] == obj
+    chart.selected_id = obj['id']
+    chart.delete_selected()
+    assert len(chart.objects) == 3
+    monkeypatch.setattr(QColorDialog, 'getColor', lambda *_: QColor())
+    chart.fill_region(anchors)
+    assert len(chart.objects) == 3
+    chart.fill_region(anchors, ('live', chart.instrument, chart.bar))
+    assert len(chart.objects) == 3
+
+
+def test_fill_properties_and_lock(chart):
+    obj = drawing('rectangle', [chart.anchor(QPointF(200, 150)), chart.anchor(QPointF(400, 300))])
+    dialog = DrawingDialog(obj)
+    dialog.fill_color.set_color('#123456')
+    dialog.fill_opacity.setValue(45)
+    dialog.accept()
+    assert dialog.result_object['fill_color'] == '#123456'
+    assert dialog.result_object['fill_opacity'] == 45
+    locked = dict(dialog.result_object, locked=True)
+    dialog.deleteLater()
+    dialog = DrawingDialog(locked)
+    dialog.fill_opacity.setValue(90)
+    dialog.accept()
+    assert dialog.result_object['fill_opacity'] == 45
+    dialog.deleteLater()
+
+
+@pytest.mark.parametrize('tool, unfinished', [('cursor', False), ('trend', False),
+                                            ('trend', True), ('horizontal', False), ('text', False)])
+def test_double_click_edits_existing_drawing_while_tool_stays_active(chart, app, monkeypatch, tool, unfinished):
+    from coinpilot_ai.cockpit.chart_dialogs import edit_drawing
+    chart.set_magnet(False)
+    chart.objects = [drawing('trend', [chart.anchor(QPointF(240, 160)), chart.anchor(QPointF(500, 220))])]
+    chart.persist_objects()
+    original = deepcopy(chart.objects[0])
+    chart.set_tool(tool)
+    if unfinished:
+        QTest.mouseClick(chart, Qt.MouseButton.LeftButton, pos=QPoint(180, 280))
+        assert chart.preview is not None
+    opened = []
+    def edit(dialog):
+        opened.append(dialog.name.text())
+        assert chart.pending_draw is None and chart.preview is None and chart.drag is None
+        dialog.name.setText('双击编辑的趋势线')
+        dialog.accept()
+        return dialog.result()
+    monkeypatch.setattr(DrawingDialog, 'exec', edit)
+    chart.edit_requested.connect(lambda identity: edit_drawing(chart, identity, chart))
+    app.clipboard().setText('unchanged')
+    # Qt 的真实双击先发送一次普通点击，再发送双击事件。
+    position = QPoint(370, 190)
+    QTest.mouseClick(chart, Qt.MouseButton.LeftButton, pos=position)
+    QTest.mouseDClick(chart, Qt.MouseButton.LeftButton, pos=position)
+    QTest.mouseRelease(chart, Qt.MouseButton.LeftButton, pos=position)
+    assert opened == [original['name']]
+    assert len(chart.objects) == 1 and chart.objects[0]['id'] == original['id']
+    assert chart.objects[0]['name'] == '双击编辑的趋势线'
+    for actual, expected in zip(chart.objects[0]['anchors'], original['anchors']):
+        assert actual == pytest.approx(expected)
+    assert chart.tool == tool and not chart.draw_click_timer.isActive()
+    assert app.clipboard().text() == 'unchanged'
+    chart.book.undo(chart.environment, chart.instrument)
+    assert chart.objects[0]['name'] == original['name'] and len(chart.objects) == 1
+
+
+def test_single_click_on_existing_drawing_still_starts_and_finishes_drawing(chart, app):
+    chart.set_magnet(False)
+    chart.objects = [drawing('trend', [chart.anchor(QPointF(240, 160)), chart.anchor(QPointF(500, 220))])]
+    chart.persist_objects()
+    chart.set_tool('trend')
+    start = QPoint(370, 190)
+    expected = chart.anchor(QPointF(start))
+    QTest.mouseClick(chart, Qt.MouseButton.LeftButton, pos=start)
+    assert chart.pending_draw is not None and len(chart.objects) == 1
+    QTest.qWait(app.doubleClickInterval()+60)
+    assert chart.pending_draw is None and chart.preview['anchors'][0] == expected
+    QTest.mouseClick(chart, Qt.MouseButton.LeftButton, pos=QPoint(550, 290))
+    assert len(chart.objects) == 2 and chart.objects[-1]['anchors'][0] == expected
+    assert chart.tool == 'trend'
+    # 快速点击另一个落点时，先完成前一个待判定的单击。
+    QTest.mouseClick(chart, Qt.MouseButton.LeftButton, pos=start)
+    QTest.mouseClick(chart, Qt.MouseButton.LeftButton, pos=QPoint(620, 260))
+    assert len(chart.objects) == 3 and chart.preview is None
+
+
+@pytest.mark.parametrize('action', ['escape', 'context', 'hide'])
+def test_pending_drawing_click_is_cancelled_when_leaving_interaction(chart, app, action):
+    chart.objects = [drawing('horizontal', [chart.anchor(QPointF(370, 190))])]
+    chart.persist_objects()
+    chart.set_tool('horizontal')
+    QTest.mouseClick(chart, Qt.MouseButton.LeftButton, pos=QPoint(370, 190))
+    assert chart.pending_draw is not None
+    if action == 'escape':
+        QTest.keyClick(chart, Qt.Key.Key_Escape)
+    elif action == 'context':
+        chart.set_context('demo', 'ETH-USDT-SWAP', '1H')
+    else:
+        chart.hide()
+    assert chart.pending_draw is None and not chart.draw_click_timer.isActive()
+    assert len(chart.book.objects('demo', 'BTC-USDT-SWAP')) == 1
+
+
+def test_menu_and_double_click_copy_clicked_price(chart, app, service):
+    service.specs[chart.instrument] = {'tickSz': '0.1'}
+    pos = QPointF(410, 230)
+    expected = chart.price_at(pos)
+    menu = chart.context_menu(pos)
+    actions = {a.text(): a for a in menu.actions()}
+    assert {'复制价格', '提醒…', '快捷下单', '封闭区域填色…'} <= actions.keys()
+    assert not actions['封闭区域填色…'].isEnabled()
+    actions['复制价格'].trigger()
+    assert app.clipboard().text() == expected
+    app.clipboard().setText('unchanged')
+    QTest.mouseDClick(chart, Qt.MouseButton.LeftButton, pos=pos.toPoint())
+    assert app.clipboard().text() == expected
+    app.clipboard().setText('axis')
+    QTest.mouseDClick(chart, Qt.MouseButton.LeftButton, pos=QPoint(chart.width()-5, 200))
+    assert app.clipboard().text() == 'axis'
+    emitted = []
+    chart.order_requested.connect(lambda *args: emitted.append(args))
+    actions['快捷下单'].menu().actions()[1].trigger()
+    assert emitted == [('demo', chart.instrument, expected, 'short')]
+    assert not service.store.list('local_order', service.scope)
+    menu.deleteLater()
+
+
+def test_chart_shortcut_prefills_only_and_alert_cancel_environment_guard(service, app, monkeypatch):
+    from coinpilot_ai.cockpit import workbench as module
+    service.fetch_candles = lambda *_: None
+    window = Workbench(service)
+    try:
+        window.chart_order('demo', service.selected, '60000.1', 'short')
+        assert window.trade.price.text() == '60000.1'
+        assert window.trade.order_type.currentData() == 'limit'
+        assert window.trade.action.currentData() == 'open:short'
+        assert not service.store.list('local_order', service.scope)
+        window.chart_order('live', service.selected, '7', 'long')
+        assert window.trade.price.text() == '60000.1'
+        service.quotes[service.selected] = {'price': '62000'}
+        captured = []
+        def cancel(dialog):
+            assert window.pages.currentIndex() == 0
+            assert dialog.parentWidget() is window.chart.canvas.window()
+            assert dialog.windowTitle() == '价格提醒 · 模拟环境'
+            captured.append(dialog)
+            return 0
+        monkeypatch.setattr(module.RuleDialog, 'exec', cancel)
+        window.chart_alert('demo', service.selected, '60000.1')
+        assert not service.rules()
+        assert captured[-1].rows[0][2].currentData() == 'below'
+        assert captured[-1].rows[0][3].text() == '60000.1'
+        def save(dialog):
+            assert window.pages.currentIndex() == 0
+            dialog._accept()
+            return 1
+        monkeypatch.setattr(module.RuleDialog, 'exec', save)
+        window.chart_alert('demo', service.selected, '63000')
+        assert window.pages.currentIndex() == 0
+        assert len(service.rules()) == 1
+        assert service.rules()[0][1]['conditions'][0]['threshold'] == '63000'
+        def switch(dialog):
+            dialog._accept()
+            service.generation += 1
+            return 1
+        monkeypatch.setattr(module.RuleDialog, 'exec', switch)
+        window.chart_alert('demo', service.selected, '64000')
+        assert len(service.rules()) == 1
+    finally:
+        window.exiting = True
+        window.close()
+        window.deleteLater()
+        app.processEvents()
 
 
 def move_pointer(chart, position, modifiers=Qt.KeyboardModifier.NoModifier):
@@ -312,7 +664,7 @@ def test_magnet_shared_between_pages_and_persisted(service, app):
     service.fetch_candles = lambda *_: None
     window = Workbench(service, lambda: None)
     try:
-        first, second = window.chart, window.trade.chart
+        first, second = window.chart, window.chart
         assert first.magnet_button.isChecked() and second.canvas.magnet_enabled
         first.magnet_button.click()
         assert not first.canvas.magnet_enabled and not second.magnet_action.isChecked()
@@ -518,20 +870,30 @@ def test_workbench_shared_chart_maximize_and_close_keeps_service(app, service):
     window.show()
     app.processEvents()
     window.chart.maximize()
-    assert window.monitor_sidebar.isHidden() and window.monitor_bottom.isHidden()
+    assert window.workspace.docks["ai"].isHidden() and window.workspace.docks["info"].isHidden()
     window.chart.maximize()
-    assert not window.monitor_sidebar.isHidden() and not window.monitor_bottom.isHidden()
+    assert not window.workspace.docks["ai"].isHidden() and not window.workspace.docks["info"].isHidden()
     menus = window.chart.findChildren(QMenu)
     menus[0].actions()[1].trigger()
     assert window.chart.canvas.tool == "trend"
+    window.chart.canvas.draw_click(QPointF(240, 180))
+    window.chart.canvas.draw_click(QPointF(400, 220))
+    assert window.chart.canvas.tool == 'trend'
+    assert window.chart.tool_buttons['trend'].isChecked()
+    QTest.keyClick(window.chart.canvas, Qt.Key.Key_Escape)
+    assert window.chart.canvas.tool == 'cursor'
+    assert window.chart.tool_buttons['cursor'].isChecked()
     window.chart.choose_tool("cursor")
     window.chart.canvas.zoom_time(.8, 400)
     window.pages.setCurrentIndex(1)
     app.processEvents()
-    assert window.trade.chart.canvas.count == window.chart.canvas.count
-    window.trade.chart.maximize()
-    assert window.trade.sidebar.isHidden()
-    window.trade.chart.maximize()
+    count = window.chart.canvas.count
+    window.pages.setCurrentIndex(0)
+    app.processEvents()
+    assert window.chart.canvas.count == count
+    window.chart.maximize()
+    assert not window.trade.sidebar.isVisible()
+    window.chart.maximize()
     window.close()
     assert not service.closed
     window.deleteLater()
@@ -572,3 +934,270 @@ def test_visible_render_performance_5000_candles_100_objects(chart):
     p95 = sorted(samples)[int(len(samples)*.95)]
     print(f"chart paint p95={p95:.2f}ms, median={statistics.median(samples):.2f}ms")
     assert p95 < 50
+
+
+def finish_series(app, series):
+    deadline = time.monotonic()+5
+    while series.job is not None and time.monotonic() < deadline:
+        app.processEvents()
+    assert series.job is None
+
+
+def assert_series_matches_full(series, rows):
+    assert series.data.rows == rows
+    assert series.data.times == [int(r[0]) for r in rows]
+    assert series.data.values == [[float(v) for v in r[1:6]] for r in rows]
+    for period, result in zip(series.data.periods, series.data.emas):
+        assert result == pytest.approx(ema_values([float(r[4]) for r in rows], period), rel=1e-13)
+
+
+@pytest.mark.parametrize("count", [5000, 50000])
+def test_shared_tail_updates_do_constant_work(service, app, count):
+    feed, pair = service.chart_feed, (service.selected, service.bar)
+    rows = candles(count)
+    rows[-1][8] = "0"
+    service.candles[pair] = rows
+    series = feed.get_series(pair)
+    finish_series(app, series)
+    index = feed.raw_index(pair)
+    changes = []
+    feed.series_changed.connect(changes.append)
+    before = series.converted_rows
+    for n in range(20):
+        row = list(rows[-1])
+        row[4] = str(float(row[1])+.01*n)
+        feed.receive(pair, [row])
+    assert series.converted_rows-before == 20
+    assert len(changes) == 20
+    assert feed.raw_index(pair) is index
+    assert feed.get_series(pair) is series
+    assert_series_matches_full(series, rows)
+    revision = series.revision
+    feed.receive(pair, [rows[-1]])
+    assert series.revision == revision and series.converted_rows-before == 20
+    appended = candles(1, int(rows[-1][0])+900000)
+    feed.merge(pair, appended)
+    assert series.converted_rows-before == 21
+    assert changes[-1].first == int(appended[0][0])
+    assert_series_matches_full(series, rows)
+
+
+def test_history_job_publishes_complete_result_with_interleaved_ticks(service, app):
+    feed, pair = service.chart_feed, (service.selected, service.bar)
+    service.candles[pair] = candles(5000)
+    series = feed.get_series(pair)
+    finish_series(app, series)
+    previous = series.data
+    changes = []
+    feed.series_changed.connect(changes.append)
+    feed.merge(pair, candles(300, 1700000000000-300*900000))
+    assert series.job is not None and series.data is previous
+    series._step()
+    assert series.data is previous
+    rows = service.candles[pair]
+    changed = list(rows[20])
+    changed[4] = str(float(changed[4])+.2)
+    feed.merge(pair, [changed])
+    last = list(rows[-1])
+    last[4] = str(float(last[4])+.3)
+    feed.merge(pair, [last])
+    feed.merge(pair, candles(2, int(rows[-1][0])+900000))
+    assert previous.rows[-1] != last and len(previous.rows) == 5000
+    finish_series(app, series)
+    assert len(changes) == 1 and changes[0].structural
+    assert_series_matches_full(series, rows)
+
+
+def test_historical_correction_reuses_prefix_and_period_change_cancels_old_job(service, app):
+    feed, pair = service.chart_feed, (service.selected, service.bar)
+    service.candles[pair] = candles(5000)
+    series = feed.get_series(pair)
+    finish_series(app, series)
+    before = series.converted_rows
+    row = list(service.candles[pair][-500])
+    row[4] = str(float(row[4])+.4)
+    feed.merge(pair, [row])
+    finish_series(app, series)
+    assert series.converted_rows-before == 500
+    assert_series_matches_full(series, service.candles[pair])
+    feed.merge(pair, candles(300, 1700000000000-300*900000))
+    assert series.job is not None
+    settings = [dict(service.chart_book.emas[0], period=p) for p in (1, 7, 1000)]
+    service.chart_book.save_emas(settings)
+    finish_series(app, series)
+    assert series.data.periods == (1, 7, 1000)
+    assert_series_matches_full(series, service.candles[pair])
+
+
+def test_feed_reset_cancels_pending_series_publication(service, app):
+    feed, pair = service.chart_feed, (service.selected, service.bar)
+    service.candles[pair] = candles(50000)
+    series = feed.get_series(pair)
+    changes = []
+    feed.series_changed.connect(changes.append)
+    assert series.job is not None
+    feed.reset()
+    assert series.job is None and not series.timer.isActive()
+    app.processEvents()
+    assert changes == [] and feed.series == {} and feed.raw_indexes == {}
+
+
+def test_cached_hover_and_old_view_ignore_unrelated_tail_updates(chart, service, app):
+    feed, pair = service.chart_feed, (service.selected, service.bar)
+    service.candles[pair] = candles(5000)
+    series = feed.get_series(pair)
+    finish_series(app, series)
+    chart.bind_series(series)
+    feed.series_changed.connect(lambda change: chart.bind_series(series, change))
+    chart.follow = False
+    chart.left_time = series.data.times[200]
+    chart.objects = [drawing("trend", [[chart.times[210], 102], [chart.times[260], 104]])]
+    chart.repaint()
+    baseline = chart.market_builds, chart.object_builds
+    for i in range(10):
+        chart.pointer = QPointF(200+i*10, 180)
+        chart.repaint()
+    assert (chart.market_builds, chart.object_builds) == baseline
+    last = list(service.candles[pair][-1])
+    last[4] = str(float(last[4])+.2)
+    feed.merge(pair, [last])
+    chart.repaint()
+    assert (chart.market_builds, chart.object_builds) == baseline
+    # 视口之前的修正会影响可见 EMA，即使可见蜡烛价格没有变化也必须重建。
+    first = list(service.candles[pair][0])
+    first[4] = "100.5"
+    feed.merge(pair, [first])
+    finish_series(app, series)
+    chart.repaint()
+    assert chart.market_builds == baseline[0]+1
+    assert chart.object_builds == baseline[1]
+
+
+def test_object_drag_reuses_fixed_layer_and_invalidates_theme_size(chart):
+    chart.objects = [drawing("trend", [[chart.times[-80], 102], [chart.times[-30], 104]])]
+    chart.selected_id = chart.objects[0]["id"]
+    chart.drag = {"mode": "object", "handle": None}
+    chart.repaint()
+    baseline = chart.market_builds, chart.object_builds
+    for i in range(5):
+        chart.objects[0]["anchors"][0][1] += .01
+        chart.repaint()
+    assert (chart.market_builds, chart.object_builds) == baseline
+    chart.drag = None
+    chart.repaint()
+    assert chart.object_builds == baseline[1]+1
+    chart.apply_theme("okx_dark")
+    chart.repaint()
+    assert chart.market_builds == baseline[0]+1
+    chart.resize(1100, 650)
+    chart.repaint()
+    assert chart.market_builds == baseline[0]+2
+    chart.devicePixelRatioF = lambda: 2.
+    chart.repaint()
+    assert chart._market_layer.devicePixelRatioF() == 2
+    assert chart.market_builds == baseline[0]+3
+
+
+def test_hidden_panels_share_calculation_and_resume_latest_snapshot(service, app):
+    service.fetch_candles = lambda *_: None
+    feed, pair = service.chart_feed, (service.selected, service.bar)
+    service.candles[pair] = candles(5000)
+    series = feed.get_series(pair)
+    finish_series(app, series)
+    window = Workbench(service, lambda: None)
+    try:
+        window.show()
+        app.processEvents()
+        panel = window.chart
+        assert panel.canvas._series is series
+        window.workspace.set_visible("market", False)
+        baseline = panel.canvas.market_builds
+        before = series.converted_rows
+        for i in range(10):
+            row = list(service.candles[pair][-1])
+            row[4] = str(float(row[4])+.01)
+            feed.merge(pair, [row])
+        assert series.converted_rows-before == 10
+        assert not panel.refresh_timer.isActive() and not panel.range_timer.isActive()
+        assert panel.canvas.market_builds == baseline
+        calls = []
+        feed.ensure_range = lambda *args: calls.append(args)
+        service.running = True
+        panel.canvas.follow = False
+        panel.ensure_view()
+        assert calls == []
+        window.workspace.set_visible("market", True)
+        app.processEvents()
+        assert panel.canvas._series is series
+        assert panel.canvas._series_revision == series.revision
+        baseline = panel.canvas.market_builds
+        panel.refresh("rules")
+        assert not panel.refresh_timer.isActive()
+        panel.canvas.repaint()
+        assert panel.canvas.market_builds == baseline
+    finally:
+        service.running = False
+        window.close()
+        window.deleteLater()
+        app.processEvents()
+
+
+def test_series_publication_can_receive_reentrant_tail_update(app):
+    rows = candles(1000)
+    series = ChartSeries(("BTC-USDT-SWAP", "15m"), [20, 60])
+    calls = []
+
+    def received(change):
+        calls.append(change)
+        if len(calls) == 1:
+            rows[-1] = list(rows[-1])
+            rows[-1][4] = str(float(rows[-1][4])+.1)
+            series.update(rows, len(rows)-1)
+
+    series.changed.connect(received)
+    series.update(rows, 0, structural=True)
+    finish_series(app, series)
+    assert len(calls) == 2 and series.pending is None
+    assert_series_matches_full(series, rows)
+    series.deleteLater()
+
+
+def test_restored_auto_view_recalculates_price_cache(chart):
+    chart.fit_prices()
+    expected = chart.low, chart.high
+    chart.restore_view({"left_time": chart.left_time, "count": chart.count,
+                        "auto": True, "low": 0, "high": 1})
+    chart.repaint()
+    assert (chart.low, chart.high) == expected
+
+
+def test_coalesced_updates_preserve_earliest_affected_time(service, app):
+    service.fetch_candles = lambda *_: None
+    feed, pair = service.chart_feed, (service.selected, service.bar)
+    service.candles[pair] = candles(300)
+    series = feed.get_series(pair)
+    window = Workbench(service, lambda: None)
+    try:
+        window.show()
+        app.processEvents()
+        panel = window.chart
+        panel.flush_refresh()
+        panel.canvas.follow = False
+        panel.canvas.left_time = series.data.times[190]
+        panel.canvas.count = 30
+        panel.canvas.repaint()
+        builds = panel.canvas.market_builds
+        for index in (200, 299):
+            row = list(service.candles[pair][index])
+            row[4] = str(float(row[4])+.1)
+            feed.merge(pair, [row])
+        assert panel.pending_change.first == series.data.times[200]
+        assert panel.refresh_timer.isActive()
+        panel.flush_refresh()
+        panel.canvas.repaint()
+        assert panel.canvas.market_builds == builds+1
+        assert panel.pending_change is None
+    finally:
+        window.close()
+        window.deleteLater()
+        app.processEvents()

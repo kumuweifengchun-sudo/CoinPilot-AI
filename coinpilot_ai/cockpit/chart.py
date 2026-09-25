@@ -1,13 +1,16 @@
 """原生交互 K 线画布；视口使用时间坐标，历史补页不会移动屏幕内容。"""
 from bisect import bisect_left, bisect_right
 from copy import deepcopy
+from decimal import Decimal, ROUND_HALF_UP
 import math
 
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal
-from PyQt6.QtWidgets import QInputDialog, QMenu, QWidget
+from PyQt6.QtGui import QColor
+from PyQt6.QtWidgets import QApplication, QColorDialog, QInputDialog, QMenu, QToolTip, QWidget
 
-from .chart_state import BARS, default_emas, drawing, ema_values
+from .chart_state import BARS, default_emas, drawing, ema_values, name_drawings
 from .chart_render import ChartRenderer
+from .chart_regions import enclosed_region
 from ..theme import events
 
 
@@ -18,6 +21,8 @@ class CandleChart(ChartRenderer, QWidget):
     tool_finished = pyqtSignal()
     view_changed = pyqtSignal()
     magnet_changed = pyqtSignal(bool)
+    price_alert_requested = pyqtSignal(str, str, str)
+    order_requested = pyqtSignal(str, str, str, str)
     SNAP_RADIUS = 14.  # Qt 逻辑像素；所有缩放和 DPI 下具有相同的操作距离。
 
     def __init__(self, service=None, parent=None):
@@ -31,6 +36,11 @@ class CandleChart(ChartRenderer, QWidget):
         self.selected_id = None
         self.tool = "cursor"
         self.preview = self.pointer = self.drag = None
+        self.pending_draw = None
+        self.draw_click_timer = QTimer(self)
+        self.draw_click_timer.setSingleShot(True)
+        self.draw_click_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self.draw_click_timer.timeout.connect(self.finish_pending_draw)
         self.snap_target = None
         self.magnet_enabled = self.book.magnet_enabled if self.book else True
         self.overlays = []
@@ -44,6 +54,16 @@ class CandleChart(ChartRenderer, QWidget):
         self.volume_ratio = .22
         self._saving = False
         self._history_latch = None
+        self._series = None
+        self._series_revision = -1
+        self._plot_revision = self._theme_revision = 0
+        self._market_key = self._objects_key = self._fit_key = None
+        self._fixed_hit_paths = {}
+        self.market_builds = self.object_builds = 0
+        self.frame_timer = QTimer(self)
+        self.frame_timer.setSingleShot(True)
+        self.frame_timer.setInterval(16)
+        self.frame_timer.timeout.connect(self.update)
         self.save_timer = QTimer(self)
         self.save_timer.setSingleShot(True)
         self.save_timer.setInterval(180)
@@ -56,15 +76,24 @@ class CandleChart(ChartRenderer, QWidget):
             self.book.changed.connect(self.book_changed)
 
     def apply_theme(self, _theme_id):
+        self._theme_revision += 1
         self.update()
+
+    def request_frame(self):
+        if self.isVisible() and not self.frame_timer.isActive():
+            self.frame_timer.start()
 
     def set_context(self, environment, instrument, bar):
         if (environment, instrument, bar) == (self.environment, self.instrument, self.bar) and self.title != "等待 OKX K 线":
             return
         self.flush_view()
+        self.cancel_pending_draw()
         self.environment, self.instrument, self.bar = environment, instrument, bar
         self.title = instrument.replace("-USDT-SWAP", " / USDT") + " · " + bar + " · OKX"
         self.rows, self.values, self.times, self.ema_cache = [], [], [], []
+        self._series = None
+        self._series_revision = -1
+        self._plot_revision += 1
         self.pointer = self.drag = self.preview = None
         self.snap_target = None
         self.selected_id = self._history_latch = None
@@ -72,6 +101,7 @@ class CandleChart(ChartRenderer, QWidget):
         self.objects = self.book.objects(environment, instrument) if self.book else []
 
     def restore_view(self, data):
+        self._fit_key = None
         self.count = max(15., min(2000., float(data.get("count", 100))))
         self.left_time = data.get("left_time")
         self.follow, self.auto_scale = data.get("follow", True), data.get("auto", True)
@@ -82,8 +112,11 @@ class CandleChart(ChartRenderer, QWidget):
 
     def book_changed(self, kind, key):
         if kind == "ema":
-            self.emas = deepcopy(self.book.emas)
-            self.calculate_emas()
+            if self._series is None:
+                self.emas = deepcopy(self.book.emas)
+                self.calculate_emas()
+            elif tuple(e["period"] for e in self.book.emas) == self._series.data.periods:
+                self.emas = deepcopy(self.book.emas)
         elif kind == "magnet":
             self.magnet_enabled = self.book.magnet_enabled
             self.snap_target = None
@@ -116,6 +149,8 @@ class CandleChart(ChartRenderer, QWidget):
     def persist_objects(self):
         if self.book and not self.service.closed:
             self.book.save_objects(self.environment, self.instrument, self.objects)
+        elif not self.book:
+            name_drawings(self.objects)
         self.update()
 
     def set_data(self, rows, title=None):
@@ -129,6 +164,8 @@ class CandleChart(ChartRenderer, QWidget):
         except (ValueError, TypeError, IndexError):
             return
         self.rows, self.values, self.times = rows, values, times
+        self._series = None
+        self._plot_revision += 1
         if times and (self.follow or self.left_time is None):
             self.left_time = times[-1] - (self.count-5)*self.interval
         self.calculate_emas()
@@ -138,6 +175,26 @@ class CandleChart(ChartRenderer, QWidget):
     def calculate_emas(self):
         closes = [v[3] for v in self.values]
         self.ema_cache = [ema_values(closes, e["period"]) for e in self.emas]
+        self._plot_revision += 1
+
+    def bind_series(self, series, change=None):
+        """生产图表使用共享数值；版本而非原始列表身份决定是否刷新。"""
+        if self._series is series and self._series_revision == series.revision:
+            return
+        different = self._series is not series
+        data = series.data
+        if different or change is None or change.structural or self.left_time is None or (
+                change.first is not None and change.first <= self.left_time+(self.count+1)*self.interval
+                and change.last >= self.left_time-self.interval):
+            self._plot_revision += 1
+        self._series, self._series_revision = series, series.revision
+        self.rows, self.values, self.times, self.ema_cache = data.rows, data.values, data.times, data.emas
+        if self.book and tuple(e["period"] for e in self.book.emas) == data.periods:
+            self.emas = deepcopy(self.book.emas)
+        if self.times and (self.follow or self.left_time is None):
+            self.left_time = self.times[-1]-(self.count-5)*self.interval
+        self.refresh_drawing_pointer()
+        self.update()
 
     @property
     def interval(self):
@@ -172,7 +229,12 @@ class CandleChart(ChartRenderer, QWidget):
 
     def fit_prices(self):
         if not self.auto_scale or not self.values:
+            self._fit_key = None
             return
+        key = (self._plot_revision, self.left_time, self.count)
+        if key == self._fit_key:
+            return
+        self._fit_key = key
         start, end = self.visible()
         rows = self.values[start:end]
         if rows:
@@ -249,7 +311,7 @@ class CandleChart(ChartRenderer, QWidget):
                 handle = self.drag["handle"]
                 position = self.point(self.drag["before"]["anchors"][handle])+self.pointer-self.drag["pos"]
                 obj["anchors"][handle] = self.drawing_anchor(position, modifiers)
-        self.update()
+        self.request_frame()
 
     def change_view(self):
         self.snap_target = None
@@ -269,6 +331,7 @@ class CandleChart(ChartRenderer, QWidget):
 
     def auto(self):
         self.auto_scale = True
+        self._fit_key = None
         self.change_view()
 
     def zoom_time(self, factor, pixel):
@@ -286,6 +349,7 @@ class CandleChart(ChartRenderer, QWidget):
         event.accept()
 
     def set_tool(self, tool):
+        self.cancel_pending_draw()
         self.tool, self.preview, self.drag = tool, None, None
         self.snap_target = None
         self.setCursor(Qt.CursorShape.ArrowCursor if tool == "cursor" else Qt.CursorShape.CrossCursor)
@@ -296,13 +360,21 @@ class CandleChart(ChartRenderer, QWidget):
         return next((o for o in self.objects if o["id"] == self.selected_id), None)
 
     def delete_selected(self):
-        obj = self.selected()
-        if obj and not obj["locked"]:
-            self.objects = [o for o in self.objects if o["id"] != self.selected_id]
-            self.selected_id = None
+        self.delete_objects({self.selected_id})
+
+    def delete_objects(self, identities):
+        self.cancel_pending_draw()
+        removed = {o['id'] for o in self.objects if o['id'] in identities and not o['locked']}
+        if removed:
+            self.objects = [o for o in self.objects if o['id'] not in removed]
+            if self.selected_id in removed:
+                self.selected_id = None
             self.persist_objects()
+        return len(removed)
 
     def hit_test(self, pos):
+        self.fit_prices()
+        self.object_layers()
         obj = self.selected()
         if obj and not obj.get("hidden") and self.bar in obj.get("bars", BARS):
             for i, anchor in enumerate(obj["anchors"]):
@@ -318,6 +390,7 @@ class CandleChart(ChartRenderer, QWidget):
         self.setFocus()
         if event.button() != Qt.MouseButton.LeftButton or not self.times:
             return
+        self.finish_pending_draw()
         pos = event.position()
         main, volume = self.plot_rects()
         self.fit_prices()
@@ -334,7 +407,13 @@ class CandleChart(ChartRenderer, QWidget):
             self.drag = {"mode": "time", "pos": pos, "count": self.count, "left": self.left_index()}
         elif main.contains(pos) or volume.contains(pos):
             if self.tool != "cursor" and main.contains(pos):
-                self.draw_click(pos, event.modifiers())
+                if self.hit_test(pos)[0]:
+                    # 线上点击先等待双击判定，避免编辑属性时误新增或完成画线。
+                    self.pointer = pos
+                    self.pending_draw = self.drawing_anchor(pos, event.modifiers())
+                    self.draw_click_timer.start(QApplication.doubleClickInterval())
+                else:
+                    self.draw_click(pos, event.modifiers())
             else:
                 identity, handle = self.hit_test(pos)
                 self.selected_id = identity
@@ -346,9 +425,22 @@ class CandleChart(ChartRenderer, QWidget):
                     self.drag = {"mode": "pan", "pos": pos, "left": self.left_index(), "low": self.low, "high": self.high}
         self.update()
 
+    def cancel_pending_draw(self):
+        self.draw_click_timer.stop()
+        self.pending_draw = None
+
+    def finish_pending_draw(self):
+        anchor = self.pending_draw
+        self.cancel_pending_draw()
+        if anchor is not None:
+            self.draw_anchor(anchor)
+            self.update()
+
     def draw_click(self, pos, modifiers=Qt.KeyboardModifier.NoModifier):
         self.pointer = pos
-        a = self.drawing_anchor(pos, modifiers)
+        self.draw_anchor(self.drawing_anchor(pos, modifiers))
+
+    def draw_anchor(self, a):
         if self.preview is not None:
             self.preview["anchors"][-1] = a
             obj = self.preview
@@ -365,8 +457,8 @@ class CandleChart(ChartRenderer, QWidget):
         self.objects.append(obj)
         self.selected_id = obj["id"]
         self.persist_objects()
-        self.set_tool("cursor")
-        self.tool_finished.emit()
+        # 完成当前对象后清空预览，保留工具，下一次点击开始新的对象。
+        self.set_tool(self.tool)
 
     def mouseMoveEvent(self, event):
         pos = event.position()
@@ -406,7 +498,7 @@ class CandleChart(ChartRenderer, QWidget):
             if d["mode"] != "object":
                 self.fit_prices()
                 self.view_changed.emit()
-        self.update()
+        self.request_frame()
 
     def mouseReleaseEvent(self, event):
         if self.drag and event.button() == Qt.MouseButton.LeftButton:
@@ -417,23 +509,99 @@ class CandleChart(ChartRenderer, QWidget):
             self.persist_objects() if mode == "object" else self.change_view()
 
     def mouseDoubleClickEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton or not self.times:
+            return
         main, volume = self.plot_rects()
+        if main.contains(event.position()):
+            identity, _ = self.hit_test(event.position())
+            if identity:
+                self.set_tool(self.tool)
+                self.selected_id = identity
+                self.edit_requested.emit(identity)
+                event.accept()
+                return
+        if self.tool != 'cursor':
+            return
+        self.drag = None
         if event.position().x() > main.right():
             self.auto()
         elif event.position().y() > volume.bottom():
             self.count = 100
             self.latest()
-        else:
-            identity, _ = self.hit_test(event.position())
-            if identity:
-                self.edit_requested.emit(identity)
-        self.drag = None
+        elif main.contains(event.position()):
+            self.copy_price(self.price_at(event.position()), event.position())
 
-    def contextMenuEvent(self, event):
-        identity, _ = self.hit_test(QPointF(event.pos()))
-        if identity:
-            self.selected_id = identity
+    def price_at(self, position):
+        if not self.times or not self.plot_rects()[0].contains(position):
+            return None
+        self.fit_prices()
+        value = Decimal(str(self.anchor(position)[1]))
+        if not value.is_finite() or value <= 0:
+            return None
+        spec = self.service.specs.get(self.instrument, {}) if self.service else {}
+        tick = Decimal(spec.get('tickSz') or '0.00000001')
+        value = (value/tick).to_integral_value(rounding=ROUND_HALF_UP)*tick
+        return format(value, 'f') if value > 0 else None
+
+    def copy_price(self, price, position):
+        if price is not None:
+            QApplication.clipboard().setText(price)
+            QToolTip.showText(self.mapToGlobal(position.toPoint()), '已复制价格：'+price, self)
+
+    def region_at(self, position):
+        if not self.times or not self.plot_rects()[0].contains(position):
+            return None
+        self.fit_prices()
+        lines = []
+        for obj in self.objects:
+            if obj.get('hidden') or self.bar not in obj.get('bars', BARS):
+                continue
+            points = [(p.x(), p.y()) for p in map(self.point, obj['anchors'])]
+            a, b, tool = points[0], points[-1], obj['tool']
+            if tool == 'horizontal':
+                lines.append((a, (a[0]+1, a[1]), -math.inf, math.inf))
+            elif tool == 'vertical':
+                lines.append((a, (a[0], a[1]+1), -math.inf, math.inf))
+            elif tool in ('trend', 'ray'):
+                lines.append((a, b, 0, math.inf if tool == 'ray' else 1))
+            elif tool == 'rectangle':
+                corners = [a, (b[0], a[1]), b, (a[0], b[1])]
+                lines.extend((p, q, 0, 1) for p, q in zip(corners, corners[1:]+corners[:1]))
+        face = enclosed_region(lines, (position.x(), position.y()))
+        return [self.anchor(QPointF(*p)) for p in face] if face else None
+
+    def fill_region(self, anchors, context=None):
+        context = context or (self.environment, self.instrument, self.bar)
+        if context != (self.environment, self.instrument, self.bar):
+            return
+        chosen = QColorDialog.getColor(QColor('#4388ff'), self, '封闭区域填色（可在属性中调整透明度）')
+        if not chosen.isValid() or context != (self.environment, self.instrument, self.bar):
+            return
+        obj = drawing('region', anchors)
+        obj.update(color=chosen.name(), fill_color=chosen.name(), fill_opacity=20)
+        self.objects.append(obj)
+        self.selected_id = obj['id']
+        self.persist_objects()
+
+    def context_menu(self, position):
+        self.cancel_pending_draw()
+        identity, _ = self.hit_test(position)
+        self.selected_id = identity
         menu = QMenu(self)
+        price = self.price_at(position)
+        if price is not None:
+            environment, instrument = self.environment, self.instrument
+            menu.addAction('复制价格', lambda: self.copy_price(price, position))
+            if self.service:
+                menu.addAction('提醒…', lambda: self.price_alert_requested.emit(environment, instrument, price))
+                orders = menu.addMenu('快捷下单')
+                for direction, label in (('long', '限价开多…'), ('short', '限价开空…')):
+                    orders.addAction(label, lambda checked=False, d=direction: self.order_requested.emit(environment, instrument, price, d))
+            region = self.region_at(position)
+            context = self.environment, self.instrument, self.bar
+            fill = menu.addAction('封闭区域填色…', lambda: self.fill_region(region, context))
+            fill.setEnabled(region is not None)
+            menu.addSeparator()
         obj = self.selected()
         if obj:
             menu.addAction("编辑属性", lambda: self.edit_requested.emit(obj["id"]))
@@ -446,7 +614,12 @@ class CandleChart(ChartRenderer, QWidget):
             menu.addSeparator()
         menu.addAction("恢复自动价格范围", self.auto)
         menu.addAction("返回最新 K 线", self.latest)
+        return menu
+
+    def contextMenuEvent(self, event):
+        menu = self.context_menu(QPointF(event.pos()))
         menu.exec(event.globalPos())
+        menu.deleteLater()
 
     def keyPressEvent(self, event):
         key, ctrl = event.key(), bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
@@ -462,6 +635,7 @@ class CandleChart(ChartRenderer, QWidget):
         elif key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             self.delete_selected()
         elif ctrl and key in (Qt.Key.Key_Z, Qt.Key.Key_Y) and self.book:
+            self.cancel_pending_draw()
             self.book.undo(self.environment, self.instrument, key == Qt.Key.Key_Y or bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier))
         else:
             super().keyPressEvent(event)
@@ -478,5 +652,7 @@ class CandleChart(ChartRenderer, QWidget):
         self.update()
 
     def hideEvent(self, event):
+        self.cancel_pending_draw()
+        self.frame_timer.stop()
         self.flush_view()
         super().hideEvent(event)

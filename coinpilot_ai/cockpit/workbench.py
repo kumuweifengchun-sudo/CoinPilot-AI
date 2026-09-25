@@ -9,10 +9,13 @@ from .chart_panel import ChartPanel, SavedSplitter
 from .store import encode
 from .ui_ai import AiPanel
 from .ui_common import button, fill_table, selected_id, show_text, table, timestamp
-from .ui_settings import SettingsPage
-from .ui_trade import TradePage
-from ..icons import icon, set_button_icon
-from ..theme import color, events, style_sheet
+from .ui_settings import SettingsPage, RuleDialog
+from .domain import OrderDraft, number
+from .ui_trade import TradeController
+from .workspace import WorkspaceLayout
+from .titlebar import WorkbenchTitleBar
+from ..icons import icon
+from ..theme import events, style_sheet
 from .watchlist import WatchlistDelegate
 
 
@@ -107,7 +110,7 @@ class ReviewPage(QWidget):
 
     def sync(self):
         try:
-            if not self.service.api.credentials:
+            if not self.service.account_connected:
                 raise ValueError("请先配置当前环境的 OKX 账户")
             begin, end = self.range()
             if self.service.history.start(begin, end):
@@ -121,58 +124,62 @@ class ReviewPage(QWidget):
 class Workbench(QMainWindow):
     events_seen = pyqtSignal()
 
-    def __init__(self, service, open_legacy, parent=None):
+    def __init__(self, service, open_legacy=None, parent=None, *, settings_owner=None, updater=None):
         super().__init__(parent)
         self.service = service
-        self.setWindowTitle("CoinPilot AI · 币航 — AI 加密交易工作台")
-        self.resize(1200, 720)
-        self.setMinimumSize(1000, 650)
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint)
+        area = self.screen().availableGeometry()
+        self.resize(min(1440, area.width()), min(900, area.height()))
+        self.setMinimumSize(min(1000, area.width()), min(650, area.height()))
         self.setStyleSheet(style_sheet())
         self.selected_event = None
         self.exiting = False
         root_widget = QWidget()
         root_widget.setObjectName("workbenchRoot")
         root = QVBoxLayout(root_widget)
-        root.setContentsMargins(12, 10, 12, 8)
-        root.setSpacing(8)
-        header = QHBoxLayout()
-        brand = QLabel()
-        brand.setObjectName("brandMark")
-        brand.setFixedSize(36, 36)
-        brand.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        brand.setPixmap(icon("brand", color("text")).pixmap(QSize(23, 23), self.devicePixelRatioF()))
-        self.brand = brand
-        header.addWidget(brand)
-        title = QLabel("CoinPilot AI")
-        title.setToolTip("币航 · AI 加密交易工作台")
-        title.setObjectName("title")
-        header.addWidget(title)
-        self.environment_label = QLabel()
-        header.addWidget(self.environment_label)
-        header.addStretch()
-        caption = QLabel("OKX  /  USDT PERPETUAL")
-        caption.setObjectName("eyebrow")
-        header.addWidget(caption)
-        mini_settings = button("迷你窗口设置", open_legacy)
-        set_button_icon(mini_settings, "mini")
-        header.addWidget(mini_settings)
-        root.addLayout(header)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
         self.pages = QTabWidget()
         self.pages.setObjectName("navigation")
         self.pages.setIconSize(QSize(18, 18))
+        self.pages.tabBar().hide()
         self.pages.currentChanged.connect(self.page_changed)
-        root.addWidget(self.pages, 1)
-        self.monitor = self.make_monitor()
-        self.pages.addTab(self.monitor, icon("monitoring"), "盯盘")
-        self.trade = TradePage(service)
-        self.pages.addTab(self.trade, icon("trade"), "交易")
+        self.title_bar = WorkbenchTitleBar(self, self.pages)
+        root.addWidget(self.title_bar)
+        body = QVBoxLayout()
+        body.setContentsMargins(8, 0, 8, 6)
+        body.setSpacing(4)
+        body.addWidget(self.pages, 1)
+        root.addLayout(body, 1)
+        self.trade = TradeController(service, self)
+        self.chart = ChartPanel(service, trading=True)
+        self.ai_placeholder = QLabel("AI 功能规划中")
+        self.ai_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.ai_placeholder.setMinimumSize(140, 100)
+        self.ai_placeholder.setObjectName("muted")
+        market = self.make_market()
+        self.make_information()
+        self.workspace = WorkspaceLayout(self, service, {
+            "ai": ("AI", self.ai_placeholder), "market": ("盘面", market),
+            "info": ("账户与交易信息", self.trade.bottom), "order": ("委托下单", self.trade.sidebar)})
+        self.title_bar.bind_workspace(self.workspace)
+        self.pages.addTab(self.workspace.host, icon("trade"), "工作台")
+        self.chart.maximize_requested.connect(self.workspace.maximize)
+        self.chart.bottom_requested.connect(lambda: self.workspace.toggle("info"))
+        self.chart.sidebar_requested.connect(lambda: self.monitor_sidebar.setVisible(self.monitor_sidebar.isHidden()))
+        self.trade.form_requested.connect(self.show_order_form)
+        self.chart.canvas.order_requested.connect(self.chart_order)
+        self.chart.canvas.price_alert_requested.connect(self.chart_alert)
+        for dock in self.workspace.docks.values():
+            dock.visibilityChanged.connect(self.sync_visible)
         self.review = ReviewPage(service)
         self.pages.addTab(self.review, icon("review"), "复盘")
-        self.settings_page = SettingsPage(service, open_legacy)
+        self.settings_page = SettingsPage(service, parent=self, owner=settings_owner, updater=updater, workspace=self.workspace)
+        self.chart.preferences_requested.connect(lambda: self.open_settings("图表"))
         self.pages.addTab(self.settings_page, icon("settings"), "设置")
         self.status = QLabel()
         self.status.setObjectName("muted")
-        root.addWidget(self.status)
+        body.addWidget(self.status)
         self.setCentralWidget(root_widget)
         events.changed.connect(self.apply_theme)
         service.updated.connect(self.refresh)
@@ -181,49 +188,12 @@ class Workbench(QMainWindow):
         self.refresh("events")
         self.refresh_watchlist()
 
-    def make_monitor(self):
+    def make_market(self):
         page = QWidget()
         root = QVBoxLayout(page)
-        root.setContentsMargins(3, 3, 3, 3)
-        split = SavedSplitter(Qt.Orientation.Horizontal, self.service, "monitor_horizontal")
-        self.monitor_vertical = SavedSplitter(Qt.Orientation.Vertical, self.service, "monitor_vertical")
-        self.chart = ChartPanel(self.service)
-        self.monitor_vertical.addWidget(self.chart)
-        self.monitor_bottom = QTabWidget()
-        events_page = QWidget()
-        events_layout = QVBoxLayout(events_page)
-        events_layout.setContentsMargins(2, 2, 2, 2)
-        events_split = SavedSplitter(Qt.Orientation.Horizontal, self.service, "monitor_events")
-        self.events = table(["时间", "事件", "合约", "级别"])
-        self.events.itemSelectionChanged.connect(self.show_event)
-        events_split.addWidget(self.events)
-        self.event_detail = QTextBrowser()
-        self.event_detail.setMinimumWidth(100)
-        self.event_detail.setOpenExternalLinks(False)
-        self.event_detail.setPlaceholderText("选择事件查看触发事实与 AI 解读")
-        events_split.addWidget(self.event_detail)
-        events_split.restore([500, 350])
-        events_layout.addWidget(events_split)
-        self.monitor_bottom.addTab(events_page, icon("bell"), "提醒事件")
-        self.monitor_positions = table(["合约", "方向", "持仓(张)", "均价", "未实现盈亏"])
-        self.monitor_bottom.addTab(self.monitor_positions, icon("layers"), "持仓摘要")
-        account_page = QWidget()
-        account_layout = QVBoxLayout(account_page)
-        self.account_summary = QLabel("账户尚未连接")
-        self.account_summary.setWordWrap(True)
-        account_layout.addWidget(self.account_summary)
-        account_layout.addStretch()
-        self.monitor_bottom.addTab(account_page, icon("wallet"), "账户")
-        self.monitor_vertical.addWidget(self.monitor_bottom)
-        self.monitor_vertical.restore([430, 150])
-        center = QWidget()
-        center_layout = QVBoxLayout(center)
-        center_layout.setContentsMargins(0, 0, 0, 0)
-        center_layout.setSpacing(2)
-        center_layout.addWidget(self.monitor_vertical, 1)
-        self.event_ai = AiPanel(self.service, "event", self.event_context)
-        center_layout.addWidget(self.event_ai)
-        split.addWidget(center)
+        root.setContentsMargins(0, 0, 0, 0)
+        split = SavedSplitter(Qt.Orientation.Horizontal, self.service, "workspace_market")
+        split.addWidget(self.chart)
         self.monitor_sidebar = QWidget()
         self.monitor_sidebar.setObjectName("sidePanel")
         self.monitor_sidebar.setMinimumWidth(180)
@@ -256,34 +226,60 @@ class Workbench(QMainWindow):
         layout.addWidget(source_label)
         split.addWidget(self.monitor_sidebar)
         split.setStretchFactor(0, 1)
-        split.restore([930, 240])
-        self.chart.maximize_requested.connect(self.maximize_monitor)
-        self.chart.bottom_requested.connect(lambda: self.toggle_monitor("bottom"))
-        self.chart.sidebar_requested.connect(lambda: self.toggle_monitor("sidebar"))
-        visibility = self.service.store.get("chart_layout", "monitor_visibility", {"bottom": True, "sidebar": True})
-        self.monitor_bottom.setVisible(visibility["bottom"])
-        self.monitor_sidebar.setVisible(visibility["sidebar"])
+        split.restore([740, 180])
+        self.monitor_sidebar.hide()
         root.addWidget(split)
         return page
 
-    def maximize_monitor(self, maximized):
-        if maximized:
-            self.monitor_visibility = (not self.monitor_bottom.isHidden(), not self.monitor_sidebar.isHidden(), not self.event_ai.isHidden())
-            self.monitor_bottom.hide()
-            self.monitor_sidebar.hide()
-            self.event_ai.hide()
-        else:
-            bottom, sidebar, ai = self.monitor_visibility
-            self.monitor_bottom.setVisible(bottom)
-            self.monitor_sidebar.setVisible(sidebar)
-            self.event_ai.setVisible(ai)
+    def make_information(self):
+        self.events = table(["时间", "事件", "合约", "级别"], readable=True)
+        self.events.itemSelectionChanged.connect(self.show_event)
+        self.event_detail = QTextBrowser()
+        self.event_detail.setOpenExternalLinks(False)
+        self.event_detail.setPlaceholderText("选择事件查看触发事实")
+        split = SavedSplitter(Qt.Orientation.Horizontal, self.service, "workspace_events")
+        split.addWidget(self.events)
+        split.addWidget(self.event_detail)
+        split.restore([500, 350])
+        self.trade.tabs.addTab(split, "提醒事件")
+        self.account_summary = QLabel("账户尚未连接")
+        self.account_summary.setWordWrap(True)
+        self.account_summary.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.trade.tabs.addTab(self.account_summary, "账户")
 
-    def toggle_monitor(self, area):
-        if self.chart.maximized:
-            self.chart.maximize()
-        widget = self.monitor_bottom if area == "bottom" else self.monitor_sidebar
-        widget.setVisible(widget.isHidden())
-        self.service.store.put("chart_layout", "monitor_visibility", {"bottom": not self.monitor_bottom.isHidden(), "sidebar": not self.monitor_sidebar.isHidden()})
+    def chart_order(self, environment, instrument, price, direction):
+        if self.service.closed or environment != self.service.environment or instrument != self.service.selected:
+            return
+        self.trade.load_draft(OrderDraft(instrument, direction=direction, order_type='limit', price=price,
+                                        margin=self.trade.margin.currentData()))
+        self.trade.set_feedback(f'{self.service.environment_label} · 已填入限价 {price}，请填写张数并检查确认。')
+
+    def chart_alert(self, environment, instrument, price):
+        service = self.service
+        if service.closed or environment != service.environment or instrument != service.selected:
+            return
+        generation = service.generation
+        current = service.quotes.get(instrument, {}).get('price')
+        op = 'below' if current and number(price) < number(current) else 'above'
+        rule = {'name': f'{instrument} 价格 {"≤" if op == "below" else "≥"} {price}',
+                'instrument': instrument, 'mode': 'all', 'cooldown': 300,
+                'conditions': [{'metric': 'price', 'op': op, 'threshold': price, 'window': 900}]}
+        dialog = RuleDialog(service, rule, self.chart.canvas.window())
+        dialog.setWindowTitle('价格提醒 · ' + service.environment_label)
+        if dialog.exec() and not service.closed and generation == service.generation:
+            service.save_rule(dialog.rule)
+            self.settings_page.reload_rules()
+        dialog.deleteLater()
+
+    def show_order_form(self):
+        self.pages.setCurrentIndex(0)
+        self.workspace.set_visible("order", True)
+        self.trade.size.setFocus()
+
+    def sync_visible(self, visible):
+        if visible and hasattr(self, "settings_page") and not self.service.closed:
+            for kind in ("account", "orders", "events", "market"):
+                self.refresh(kind)
 
     def add_watch(self):
         try:
@@ -330,64 +326,90 @@ class Workbench(QMainWindow):
             return
         self.selected_event = key
         facts = {k: v for k, v in event.items() if k not in ("context", "analysis")}
-        self.event_detail.setMarkdown(f"### {event['name']}\n\n```json\n{encode(facts)}\n```\n\n" + (event.get("analysis") or "AI 尚未解读，可展开下方 AI 面板按需分析。"))
+        self.event_detail.setMarkdown(f"### {event['name']}\n\n```json\n{encode(facts)}\n```\n\n")
         self.events_seen.emit()
 
     def page_changed(self, index):
         if self.service.closed or not hasattr(self, "settings_page"):
             return
+        self.workspace.activate(index == 0 and self.isVisible())
         if index == 0:
             self.events_seen.emit()
-        if index in (0, 1, 2):
-            (self.event_ai if index == 0 else self.trade.ai_panel if index == 1 else self.review.ai_panel).reload_templates()
-        if index == 2:
+            self.sync_visible(True)
+        elif index == 1:
+            self.review.ai_panel.reload_templates()
             self.review.refresh()
-        if index == 3:
-            self.settings_page.reload()
+        elif index == 2:
+            self.settings_page.refresh_status()
+
+    def open_settings(self, section="常规与网络"):
+        self.pages.setCurrentWidget(self.settings_page)
+        self.settings_page.select_section(section)
+        self.settings_page.refresh_status()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.title_bar.setup_native_frame()
+        if hasattr(self, "workspace"):
+            self.workspace.activate(self.pages.currentIndex() == 0)
+            self.sync_visible(True)
+
+    def hideEvent(self, event):
+        if hasattr(self, "workspace"):
+            self.workspace.activate(False)
+        super().hideEvent(event)
 
     def apply_theme(self, _theme_id):
         self.setStyleSheet(style_sheet())
-        self.brand.setPixmap(icon("brand", color("text")).pixmap(QSize(23, 23), self.devicePixelRatioF()))
+        self.title_bar.apply_theme()
         self.watchlist.viewport().update()
         self.refresh("status")
+
+    def nativeEvent(self, event_type, message):
+        if hasattr(self, 'title_bar'):
+            result = self.title_bar.native_event(message)
+            if result is not None:
+                return result
+        # 未处理的消息交回 Qt；不调用 SIP 的基类 nativeEvent 指针桥接。
+        return False, 0
 
     def refresh(self, kind):
         s = self.service
         if s.closed:
             return
-        self.environment_label.setText("模拟环境" if s.environment == "demo" else "真实环境")
-        badge_color = color("warning" if s.environment == "demo" else "negative")
-        self.environment_label.setStyleSheet(
-            f"padding:4px 10px;border:1px solid {badge_color};border-radius:7px;"
-            f"font-size:11px;color:{badge_color};background:{color('surface_raised')};font-weight:600;")
+        environment = s.environment_label
+        title = f"CoinPilot AI · {environment}"
+        if self.windowTitle() != title:
+            self.setWindowTitle(title)
+        if kind in ("selection", "environment", "market"):
+            for key, title in (("market", "盘面"), ("order", "委托下单")):
+                self.workspace.docks[key].setWindowTitle(f"{title} · {s.selected} · {environment}")
         if kind in ("price", "selection", "environment", "status"):
             q = s.quotes.get(s.selected)
             fresh = q and time.time() - q["time"] <= 30
             self.quote_label.setText(s.selected + "    " + (q["price"] if q else "—") + ("" if fresh else " · 数据未就绪／过期"))
             if kind != "status":
                 self.refresh_watchlist()
-        if kind in ("candles", "selection", "environment"):
-            self.chart.set_data(s.candles.get((s.selected, s.bar), []), s.selected + " / " + s.bar)
-        if kind in ("events", "environment"):
+        if kind == "environment" or (kind == "events" and self.trade.bottom.isVisible()):
             self.events.blockSignals(True)
             fill_table(self.events, [(key, [timestamp(e["time"]), e["name"], e.get("instrument", ""), {"market": "行情", "position": "持仓", "order": "订单"}.get(e.get("priority"), "行情")]) for key, e in s.store.list("event", s.scope, limit=200)])
             self.events.blockSignals(False)
             if kind == "events":
                 self.show_event()
         if kind in ("account", "environment"):
-            self.account_summary.setText("账户权益 " + str(s.balance.get("totalEq", "—")) + " USD\n持仓 " + str(len(s.positions)) + " 项\n" + (s.account_error or "账户同步正常"))
+            self.account_summary.setText(environment + "\n账户权益 " + str(s.balance.get("totalEq", "—")) + " USDT\n可用资金 " + str(s.balance.get('availEq', '—')) + " USDT\n持仓 " + str(len(s.positions)) + " 项\n" + (s.account_error or "账户同步正常"))
             self.settings_page.update_status()
-            fill_table(self.monitor_positions, [(p.get("posId"), [p["instId"], p["posSide"], p["pos"], p.get("avgPx", "—"), p.get("upl", "—")]) for p in s.positions])
         if kind == "environment":
             self.selected_event = None
             self.event_detail.clear()
-            for panel in (self.event_ai, self.trade.ai_panel, self.review.ai_panel):
+            for panel in (self.review.ai_panel,):
                 panel.last_record = None
                 panel.last_request = None
                 panel.answer.clear()
             self.settings_page.reload_rules()
             self.review.refresh()
-        self.trade.refresh(kind)
+        if kind in ("selection", "environment") or self.trade.sidebar.isVisible() or self.trade.bottom.isVisible():
+            self.trade.refresh(kind)
         if kind == "history":
             self.review.refresh()
         if kind == "reports":
@@ -397,6 +419,7 @@ class Workbench(QMainWindow):
 
     def closeEvent(self, event):
         if self.exiting:
+            self.workspace.shutdown()
             event.accept()
             return
         event.ignore()

@@ -9,6 +9,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 BARS = {"1m": 60, "5m": 300, "15m": 900, "1H": 3600, "4H": 14400, "1D": 86400}
 TOOLS = {"cursor": "光标", "trend": "趋势线", "horizontal": "水平线", "ray": "射线",
          "vertical": "竖线", "rectangle": "矩形", "text": "文字", "fib": "斐波拉契", "measure": "测距"}
+OBJECT_NAMES = dict(TOOLS, region="填色区域")
 def default_emas():
     return [{"period": 20, "color": theme_color("ema_fast"), "width": 1.5, "visible": True},
             {"period": 60, "color": theme_color("ema_slow"), "width": 1.5, "visible": True}]
@@ -22,6 +23,22 @@ def drawing(tool, anchors, text=""):
     return {"id": uuid.uuid4().hex, "tool": tool, "anchors": deepcopy(anchors), "text": text,
             "color": theme_color("focus"), "width": 1.5, "style": "solid", "locked": False, "hidden": False,
             "bars": list(BARS), "levels": [{"value": n, "label": f"{n:g}", "color": theme_color("focus")} for n in FIB_LEVELS]}
+
+
+def name_drawings(objects):
+    """用当前最小可用编号给未命名对象命名，保留已有名称。"""
+    used = {o.get('name') for o in objects if o.get('name')}
+    next_indices = {}
+    for obj in objects:
+        if str(obj.get('name') or '').strip():
+            continue
+        tool, prefix = obj['tool'], OBJECT_NAMES[obj['tool']]
+        index = next_indices.get(tool, 1)
+        while prefix+str(index) in used:
+            index += 1
+        obj['name'] = prefix+str(index)
+        next_indices[tool] = index+1
+        used.add(obj['name'])
 
 
 def validate_emas(items):
@@ -69,20 +86,26 @@ class ChartBook(QObject):
     def objects(self, environment, instrument):
         key = (environment, instrument)
         if key not in self.cache:
-            self.cache[key] = self.store.get("chart_drawings", instrument, [], environment)
+            objects = self.store.get("chart_drawings", instrument, [], environment)
+            original = deepcopy(objects)
+            name_drawings(objects)
+            if original != objects:
+                self.store.put('chart_drawings', instrument, objects, environment)
+            self.cache[key] = objects
         return deepcopy(self.cache[key])
 
     def save_objects(self, environment, instrument, objects, *, history=True):
         key = (environment, instrument)
         before = self.objects(*key)
+        name_drawings(objects)
         if before == objects:
             return
+        self.store.put('chart_drawings', instrument, objects, environment)
         if history:
             self.undo_stacks.setdefault(key, []).append(before)
             self.undo_stacks[key] = self.undo_stacks[key][-100:]
             self.redo_stacks[key] = []
         self.cache[key] = deepcopy(objects)
-        self.store.put("chart_drawings", instrument, objects, environment)
         self.changed.emit("drawings", key)
 
     def undo(self, environment, instrument, redo=False):
