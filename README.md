@@ -1,6 +1,6 @@
 # CoinPilot AI · 币航
 
-![CoinPilot AI 项目展示](coinpilot_ai/assets/app_icon/project.png)
+<img src="coinpilot_ai/assets/app_icon/project.png" alt="CoinPilot AI 项目展示" width="320" />
 
 **AI 加密交易工作台** · 项目名：`coinpilot-ai` · [GitHub 仓库](https://github.com/kumuweifengchun-sudo/CoinPilot-AI)
 
