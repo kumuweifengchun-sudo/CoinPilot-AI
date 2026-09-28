@@ -5,7 +5,7 @@ import statistics
 import time
 
 import pytest
-from PyQt6.QtCore import QObject, QPoint, QPointF, Qt, pyqtSignal
+from PyQt6.QtCore import QDateTime, QObject, QPoint, QPointF, Qt, pyqtSignal
 from PyQt6.QtNetwork import QNetworkProxy
 from PyQt6.QtTest import QTest
 from PyQt6.QtGui import QMouseEvent, QWheelEvent
@@ -13,10 +13,12 @@ from PyQt6.QtWidgets import QMenu
 
 from coinpilot_ai.core.config import DEFAULT_CONFIG
 from coinpilot_ai.charts.canvas import CandleChart
+from coinpilot_ai.charts.panel import ChartPanel
 from coinpilot_ai.charts.dialogs import DrawingDialog, EmaDialog
 from coinpilot_ai.market.candles import CandleStream, valid_candles
 from coinpilot_ai.charts.state import OBJECT_NAMES, ChartBook, drawing, ema_values, trade_lines
 from coinpilot_ai.charts.position import position_metrics
+from coinpilot_ai.charts.pattern import projected_prices
 from coinpilot_ai.market.series import ChartSeries
 from coinpilot_ai.application.service import CockpitService
 from coinpilot_ai.core.store import Store
@@ -126,6 +128,76 @@ def drag(chart, start, end):
     QTest.mouseRelease(chart, Qt.MouseButton.LeftButton, pos=QPoint(*end))
 
 
+def test_price_pattern_select_place_move_edit_and_undo(chart, app):
+    chart.set_tool("price_pattern")
+    source_first, source_last = chart.times[-75], chart.times[-55]
+    start = (round(chart.x(source_first)), 190)
+    end = (round(chart.x(source_last)), 190)
+    drag(chart, start, end)
+    assert chart.pattern_selection is None
+    assert chart.preview is not None and len(chart.preview["closes"]) == 21
+    assert chart.preview["source_start"] == source_first
+    target = QPoint(round(chart.x(chart.times[-35])), 205)
+    QTest.mouseClick(chart, Qt.MouseButton.LeftButton, pos=target)
+    assert chart.tool == "cursor" and chart.preview is None
+    obj = deepcopy(chart.objects[-1])
+    assert obj["tool"] == "price_pattern" and obj["bars"] == ["15m"]
+    assert obj["anchors"][0][0] == chart.times[-35]
+    assert len(projected_prices(obj["closes"], obj["anchors"][0][1])) == 21
+    chart.repaint()
+    assert obj["id"] in chart.hit_paths
+    anchor = chart.point(obj["anchors"][0])
+    drag(chart, (round(anchor.x()), round(anchor.y())), (round(anchor.x())+45, round(anchor.y())-16))
+    moved = deepcopy(chart.objects[-1])
+    assert moved["anchors"][0][0] > obj["anchors"][0][0]
+    assert moved["anchors"][0][1] > obj["anchors"][0][1]
+    dialog = DrawingDialog(moved)
+    dialog.pattern_opacity.setValue(35)
+    dialog.accept()
+    assert dialog.result_object["opacity"] == 35
+    dialog.deleteLater()
+    chart.book.undo(chart.environment, chart.instrument)
+    assert chart.objects[-1]["anchors"] == obj["anchors"]
+    chart.book.undo(chart.environment, chart.instrument, redo=True)
+    assert chart.objects[-1]["anchors"] == moved["anchors"]
+    assert ChartBook(chart.service.store).objects(chart.environment, chart.instrument)[-1] == moved
+
+
+def test_price_pattern_can_be_cancelled_and_is_period_scoped(chart):
+    chart.set_tool("price_pattern")
+    drag(chart, (round(chart.x(chart.times[-70])), 190),
+         (round(chart.x(chart.times[-65])), 190))
+    assert chart.preview is not None
+    QTest.keyClick(chart, Qt.Key.Key_Escape)
+    assert chart.preview is None and chart.objects == [] and chart.tool == "cursor"
+    chart.set_tool("price_pattern")
+    drag(chart, (round(chart.x(chart.times[-70])), 190),
+         (round(chart.x(chart.times[-65])), 190))
+    future = chart.times[-1]+3*chart.interval
+    QTest.mouseClick(chart, Qt.MouseButton.LeftButton,
+                     pos=QPoint(round(chart.x(future)), 200))
+    assert chart.objects[-1]["anchors"][0][0] == future
+    chart.repaint()
+    assert chart.objects[-1]["id"] in chart.hit_paths
+    chart.set_context("demo", chart.instrument, "1H")
+    chart.set_data(candles(100, interval=3600000))
+    chart.repaint()
+    assert chart.objects[-1]["id"] not in chart.hit_paths
+
+
+def test_price_pattern_preview_keeps_time_axis_navigation(chart):
+    chart.set_tool("price_pattern")
+    drag(chart, (round(chart.x(chart.times[-70])), 190),
+         (round(chart.x(chart.times[-60])), 190))
+    assert chart.preview is not None
+    old_count = chart.count
+    _, volume = chart.plot_rects()
+    y = round(volume.bottom()+12)
+    drag(chart, (400, y), (470, y))
+    assert chart.count < old_count
+    assert chart.preview is not None and chart.tool == "price_pattern"
+
+
 def test_pan_both_axes_and_new_quotes_keep_manual_view(chart):
     left, low, high = chart.left_time, chart.low, chart.high
     drag(chart, (430, 170), (510, 215))
@@ -160,6 +232,48 @@ def test_time_zoom_anchors_pointer_and_price_axis_reset(chart):
     count = chart.count
     drag(chart, (400, int(volume.bottom()+12)), (470, int(volume.bottom()+12)))
     assert chart.count < count
+
+
+def test_jump_to_date_centers_view_without_linear_history_paging(chart):
+    older = chart.times[0]-50_000*chart.interval
+    older_requests = []
+    chart.history_requested.connect(lambda: older_requests.append(True))
+    chart.jump_to_time(older)
+    assert chart.left_time+chart.count*chart.interval/2 == older
+    assert not chart.follow and not older_requests
+    chart.set_data(candles(301))
+    assert chart.left_time+chart.count*chart.interval/2 == older
+    chart.latest()
+    assert chart.follow and chart.left_time > older
+
+
+def test_date_jump_button_uses_selected_local_time_and_requests_target_range(service, app, monkeypatch):
+    from coinpilot_ai.charts import panel as module
+    service.api = FakeApi()
+    panel = ChartPanel(service)
+    panel.resize(950, 530)
+    panel.show()
+    app.processEvents()
+    service.candles[panel.pair] = candles()
+    panel.canvas.set_data(service.candles[panel.pair])
+    target = panel.canvas.times[0]-1000*panel.canvas.interval
+    def accept(dialog):
+        dialog.date.setDateTime(QDateTime.fromMSecsSinceEpoch(target))
+        return dialog.DialogCode.Accepted
+    monkeypatch.setattr(module.DateJumpDialog, "exec", accept)
+    try:
+        service.running = True
+        panel.date_jump_button.click()
+        assert panel.canvas.left_time+panel.canvas.count*panel.canvas.interval/2 == target
+        assert not panel.canvas.follow
+        path, _, params = service.api.calls[-1]
+        assert path == "/api/v5/market/history-candles"
+        assert int(params["after"]) <= panel.canvas.left_time+(panel.canvas.count+1)*panel.canvas.interval
+    finally:
+        service.running = False
+        panel.close()
+        panel.deleteLater()
+        app.processEvents()
 
 
 def test_history_prepend_and_resize_keep_time_price_anchors(chart):
@@ -858,6 +972,7 @@ def test_old_view_requests_target_range_directly(service):
     left = 1700000000000-900000*50000
     service.chart_feed.ensure_range(pair, left, 100)
     assert int(api.calls[-1][2]["after"]) <= left+101*900000
+    assert service.chart_feed.history_state[pair] == "加载指定时间范围 K 线…"
     api.calls[-1][1](candles(100, left), None)
     assert len(service.candles[pair]) == 400
 

@@ -17,6 +17,7 @@ ALIASES = {
 # 下列图表及窗口控制符号为本项目原创，其余保留 Lucide 许可。
 CUSTOM = {
     "trend": '<path d="M5 18 19 6"/><circle cx="5" cy="18" r="2"/><circle cx="19" cy="6" r="2"/>',
+    "price_pattern": '<path d="M3 17 8 11 12 14 16 6 21 9"/><path d="M3 21h18"/>',
     "fib": '<path d="M4 4h16M4 10h12M4 15h16M4 20h10M4 4v16"/>',
     "long_position": '<path d="M4 12h16M4 5h16M4 19h16M12 10V5m-3 3 3-3 3 3"/>',
     "short_position": '<path d="M4 12h16M4 5h16M4 19h16M12 14v5m-3-3 3 3 3-3"/>',

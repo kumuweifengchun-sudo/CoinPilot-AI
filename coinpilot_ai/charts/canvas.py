@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import QApplication, QColorDialog, QInputDialog, QMenu, QTo
 from coinpilot_ai.market.intervals import BARS
 from coinpilot_ai.charts.state import default_emas, drawing, ema_values, name_drawings
 from coinpilot_ai.charts.position import POSITION_TOOLS, position_metrics
+from coinpilot_ai.charts.pattern import capture_pattern, projected_prices
 from .render import ChartRenderer
 from .regions import enclosed_region
 from coinpilot_ai.market.indicators import IndicatorResult, calculate
@@ -45,6 +46,7 @@ class CandleChart(ChartRenderer, QWidget):
         self.selected_id = None
         self.tool = "cursor"
         self.preview = self.pointer = self.drag = None
+        self.pattern_selection = None
         self.pending_draw = None
         self.position_stage = 0
         self.draw_click_timer = QTimer(self)
@@ -107,6 +109,7 @@ class CandleChart(ChartRenderer, QWidget):
         self._series_revision = -1
         self._plot_revision += 1
         self.pointer = self.drag = self.preview = None
+        self.pattern_selection = None
         self.position_stage = 0
         self.snap_target = None
         self.selected_id = self._history_latch = None
@@ -367,6 +370,11 @@ class CandleChart(ChartRenderer, QWidget):
     def refresh_drawing_pointer(self, modifiers=None):
         if self.pointer is None:
             return
+        if self.tool == "price_pattern":
+            if self.preview is not None:
+                self.preview["anchors"][0] = self.pattern_anchor(self.pointer)
+                self.request_frame()
+            return
         if modifiers is None:
             from PyQt6.QtWidgets import QApplication
             modifiers = QApplication.keyboardModifiers()
@@ -392,15 +400,21 @@ class CandleChart(ChartRenderer, QWidget):
                     obj["anchors"][handle] = self.drawing_anchor(position, modifiers)
         self.request_frame()
 
-    def change_view(self):
+    def change_view(self, *, request_older=True):
         self.snap_target = None
         self.fit_prices()
         self.save_timer.start()
         self.view_changed.emit()
         self.update()
-        if self.times and self.left_index() < 40 and self._history_latch != self.times[0]:
+        if request_older and self.times and self.left_index() < 40 and self._history_latch != self.times[0]:
             self._history_latch = self.times[0]
             self.history_requested.emit()
+
+    def jump_to_time(self, stamp):
+        """将指定时间置于视口中央，交由图窗按需补齐该范围的历史。"""
+        self.follow = False
+        self.left_time = int(stamp)-self.count*self.interval/2
+        self.change_view(request_older=False)
 
     def latest(self):
         self.follow = True
@@ -430,6 +444,7 @@ class CandleChart(ChartRenderer, QWidget):
     def set_tool(self, tool):
         self.cancel_pending_draw()
         self.tool, self.preview, self.drag = tool, None, None
+        self.pattern_selection = None
         self.position_stage = 0
         self.snap_target = None
         self.setCursor(Qt.CursorShape.ArrowCursor if tool == "cursor" else Qt.CursorShape.CrossCursor)
@@ -469,6 +484,49 @@ class CandleChart(ChartRenderer, QWidget):
                 return identity, None
         return None, None
 
+    def pattern_index(self, position):
+        """取鼠标附近的真实 K 线，避免在历史空白处截取走势。"""
+        if not self.times:
+            return None
+        stamp = self.anchor(position)[0]
+        index = bisect_left(self.times, stamp)
+        candidates = range(max(0, index-1), min(len(self.times), index+1))
+        nearest = min(candidates, key=lambda i: abs(self.times[i]-stamp), default=None)
+        if nearest is None:
+            return None
+        step = self.plot_rects()[0].width()/self.count
+        return nearest if abs(self.x(self.times[nearest])-position.x()) <= max(6, step*.55) else None
+
+    def pattern_anchor(self, position):
+        stamp, price = self.anchor(position)
+        return [int(self.time_at(round(self.index_at(stamp)))), price]
+
+    def finish_pattern_selection(self, position):
+        selection = self.pattern_selection
+        self.pattern_selection = None
+        self.drag = None
+        if selection is None:
+            return
+        first_stamp, last_stamp = sorted(selection)
+        first, last = bisect_left(self.times, first_stamp), bisect_left(self.times, last_stamp)
+        if first >= len(self.times) or last >= len(self.times) or (
+                self.times[first] != first_stamp or self.times[last] != last_stamp):
+            QToolTip.showText(self.mapToGlobal(position.toPoint()), "源区间行情已变化，请重新框选", self, QRect(), 2500)
+            self.update()
+            return
+        try:
+            source_start, source_end, closes = capture_pattern(self.rows[first:last+1], self.interval)
+        except (ValueError, TypeError, IndexError) as exc:
+            QToolTip.showText(self.mapToGlobal(position.toPoint()), str(exc), self, QRect(), 2500)
+            self.update()
+            return
+        obj = drawing("price_pattern", [self.pattern_anchor(position)])
+        obj.update(closes=closes, interval=self.interval, source_start=source_start,
+                   source_end=source_end, bars=[self.bar], opacity=75, color="#d58cff", width=2.5)
+        self.preview = obj
+        QToolTip.showText(self.mapToGlobal(position.toPoint()), "移动到目标日期，单击放置走势", self, QRect(), 2500)
+        self.update()
+
     def mousePressEvent(self, event):
         self.setFocus()
         if event.button() != Qt.MouseButton.LeftButton or not self.times:
@@ -480,6 +538,30 @@ class CandleChart(ChartRenderer, QWidget):
         if pos.y() < 52:
             if pos.y() >= 24:
                 self.settings_requested.emit()
+            return
+        if self.tool == "price_pattern" and main.contains(pos):
+            if self.preview is not None:
+                anchor = self.pattern_anchor(pos)
+                try:
+                    projected_prices(self.preview["closes"], anchor[1])
+                except ValueError as exc:
+                    QToolTip.showText(self.mapToGlobal(pos.toPoint()), str(exc), self, QRect(), 2500)
+                    return
+                obj = self.preview
+                obj["anchors"][0] = anchor
+                self.preview = None
+                self.objects.append(obj)
+                self.selected_id = obj["id"]
+                self.persist_objects()
+                self.selection_changed.emit()
+                self.set_tool("cursor")
+                self.tool_finished.emit()
+            else:
+                index = self.pattern_index(pos)
+                if index is not None:
+                    self.pattern_selection = (self.times[index], self.times[index])
+                    self.drag = {"mode": "pattern_select"}
+                    self.update()
             return
         if main.bottom() <= pos.y() <= volume.top():
             self.drag = {"mode": "volume", "pos": pos, "ratio": self.volume_ratio}
@@ -579,6 +661,17 @@ class CandleChart(ChartRenderer, QWidget):
         else:
             self.crosshair_changed.emit(None)
         self.snap_target = None
+        if self.tool == "price_pattern":
+            if self.drag and self.drag["mode"] == "pattern_select":
+                index = self.pattern_index(pos)
+                if index is not None:
+                    self.pattern_selection = (self.pattern_selection[0], self.times[index])
+                self.request_frame()
+                return
+            if self.preview is not None and not self.drag:
+                self.preview["anchors"][0] = self.pattern_anchor(pos)
+                self.request_frame()
+                return
         if self.tool != "cursor" and not self.drag:
             self.refresh_drawing_pointer(event.modifiers())
         if self.drag:
@@ -604,7 +697,10 @@ class CandleChart(ChartRenderer, QWidget):
             elif d["mode"] == "object":
                 obj = self.selected()
                 if obj:
-                    if obj['tool'] in POSITION_TOOLS and d['handle'] is not None:
+                    if obj['tool'] == "price_pattern":
+                        position = self.point(d["before"]["anchors"][0])+QPointF(dx, dy)
+                        obj["anchors"][0] = self.pattern_anchor(position)
+                    elif obj['tool'] in POSITION_TOOLS and d['handle'] is not None:
                         if d['handle'] == 3:
                             stamp = max(obj['anchors'][0][0]+self.interval,
                                         self.anchor(self.point(d['before']['anchors'][1])+QPointF(dx, 0))[0])
@@ -625,6 +721,10 @@ class CandleChart(ChartRenderer, QWidget):
         self.request_frame()
 
     def mouseReleaseEvent(self, event):
+        if self.drag and self.drag["mode"] == "pattern_select" and event.button() == Qt.MouseButton.LeftButton:
+            self.mouseMoveEvent(event)
+            self.finish_pattern_selection(event.position())
+            return
         if self.drag and event.button() == Qt.MouseButton.LeftButton:
             self.mouseMoveEvent(event)
             mode = self.drag["mode"]
@@ -633,6 +733,11 @@ class CandleChart(ChartRenderer, QWidget):
                 if obj and obj['tool'] in POSITION_TOOLS:
                     try:
                         position_metrics(obj)
+                    except ValueError:
+                        obj.update(deepcopy(self.drag['before']))
+                elif obj and obj['tool'] == "price_pattern":
+                    try:
+                        projected_prices(obj["closes"], obj["anchors"][0][1])
                     except ValueError:
                         obj.update(deepcopy(self.drag['before']))
             self.drag = None

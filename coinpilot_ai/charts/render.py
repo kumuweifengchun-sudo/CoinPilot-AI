@@ -8,9 +8,61 @@ from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPainterPathStroker, QPe
 from coinpilot_ai.market.intervals import BARS
 from coinpilot_ai.ui.theme import color
 from .position import POSITION_TOOLS, position_metrics
+from .pattern import projected_prices
 
 
 class ChartRenderer:
+    def draw_pattern_selection(self, p, main):
+        selection = self.pattern_selection
+        if selection is None or not self.times:
+            return
+        first, last = sorted(selection)
+        step = main.width()/self.count
+        left = self.x(first)-step*.5
+        right = self.x(last)+step*.5
+        shade = QColor(color("focus"))
+        shade.setAlpha(45)
+        p.save()
+        p.setClipRect(main)
+        p.fillRect(QRectF(left, main.top(), right-left, main.height()), shade)
+        p.setPen(QPen(QColor(color("focus")), 1, Qt.PenStyle.DashLine))
+        p.drawLine(QPointF(left, main.top()), QPointF(left, main.bottom()))
+        p.drawLine(QPointF(right, main.top()), QPointF(right, main.bottom()))
+        p.restore()
+
+    def draw_pattern_object(self, p, obj, main):
+        try:
+            start, anchor_price = obj["anchors"][0]
+            prices = projected_prices(obj["closes"], float(anchor_price))
+            interval = int(obj["interval"])
+            if interval <= 0:
+                return
+        except (KeyError, IndexError, TypeError, ValueError):
+            return
+        path = QPainterPath()
+        for index, price in enumerate(prices):
+            point = QPointF(self.x(start+index*interval), self.y(price))
+            if index:
+                path.lineTo(point)
+            else:
+                path.moveTo(point)
+        if not path.boundingRect().adjusted(-10, -10, 10, 10).intersects(main):
+            return
+        shade = QColor(obj["color"])
+        shade.setAlpha(round(255*max(0, min(100, int(obj.get("opacity", 75))))/100))
+        style = {"solid": Qt.PenStyle.SolidLine, "dash": Qt.PenStyle.DashLine,
+                 "dot": Qt.PenStyle.DotLine}.get(obj.get("style"), Qt.PenStyle.SolidLine)
+        p.setPen(QPen(shade, obj["width"], style))
+        p.drawPath(path)
+        stroker = QPainterPathStroker()
+        stroker.setWidth(max(10, obj["width"]+6))
+        self.hit_paths[obj["id"]] = stroker.createStroke(path)
+        if obj["id"] == self.selected_id:
+            p.setBrush(QColor(color("surface")))
+            p.setPen(QPen(QColor(color("text_secondary")), 1))
+            p.drawEllipse(QPointF(self.x(start), self.y(anchor_price)), 4, 4)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+
     def object_path(self, obj):
         main, _ = self.plot_rects()
         points = [self.point(a) for a in obj["anchors"]]
@@ -71,6 +123,9 @@ class ChartRenderer:
         p.setClipRect(main)
         for obj in sorted(objects, key=lambda item: item['tool'] != 'region'):
             if obj.get("hidden") or self.bar not in obj.get("bars", BARS):
+                continue
+            if obj["tool"] == "price_pattern":
+                self.draw_pattern_object(p, obj, main)
                 continue
             path, points, labels = self.object_path(obj)
             if not path.boundingRect().adjusted(-120, -30, 120, 30).intersects(main):
@@ -352,6 +407,13 @@ class ChartRenderer:
         start, end = self.visible()
         left, step = self.left_index(), main.width()/self.count
         self.draw_market_layer(p)
+        self.draw_pattern_selection(p, main)
+        if start >= end:
+            self.draw_object_layer(p)
+            p.setPen(QColor(color("text_muted")))
+            p.drawText(main, Qt.AlignmentFlag.AlignCenter, "当前时间范围暂无 K 线")
+            p.end()
+            return
         cursor = self.point(self.snap_target[:2]) if self.snap_target is not None else self.pointer
         hovered = len(self.rows)-1
         if cursor and main.left() <= cursor.x() <= main.right():

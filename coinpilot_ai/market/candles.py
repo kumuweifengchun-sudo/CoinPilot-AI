@@ -410,6 +410,8 @@ class ChartFeed(QObject):
             return
         self.pending.add(key)
         self.window_attempts[key] = time.monotonic()
+        self.history_state[pair] = "加载指定时间范围 K 线…"
+        self.service.updated.emit("chart_status")
         generation = self.generation
         def done(data, error):
             if generation != self.generation or self.service.closed:

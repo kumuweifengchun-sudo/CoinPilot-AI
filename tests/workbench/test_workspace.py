@@ -132,6 +132,19 @@ def test_six_chart_contexts_and_named_workspace_restore(workspace, app):
     assert window.scanner_panel.filters["rsi_max"].text() == "25"
 
 
+def test_date_jump_syncs_other_chart_and_schedules_its_history(workspace, app, monkeypatch):
+    window, _service = workspace
+    grid = window.multi_chart
+    grid.layout_choice.setCurrentIndex(grid.layout_choice.findData(2))
+    grid.sync_options["time"].setChecked(True)
+    target = grid.panels[1]
+    scheduled = []
+    monkeypatch.setattr(target, "schedule_range", lambda: scheduled.append(target.canvas.left_time))
+    grid.panels[0].canvas.jump_to_time(1_700_000_000_000)
+    assert target.canvas.left_time == grid.panels[0].canvas.left_time
+    assert scheduled == [target.canvas.left_time]
+
+
 def test_chart_selectors_support_catalog_search_and_independent_pairs(workspace, app):
     window, service = workspace
     grid = window.multi_chart

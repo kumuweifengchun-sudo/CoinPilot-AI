@@ -3,12 +3,12 @@ import time
 from copy import deepcopy
 from dataclasses import replace
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QDateTime, Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (QButtonGroup, QComboBox, QHBoxLayout, QLabel, QMenu, QPushButton, QScrollArea, QSizePolicy, QSplitter,
                             QToolButton, QVBoxLayout, QWidget)
 
 from .canvas import CandleChart
-from .dialogs import EmaDialog, ObjectsDialog, edit_drawing
+from .dialogs import DateJumpDialog, EmaDialog, ObjectsDialog, edit_drawing
 from .settings import IndicatorSettingsDialog
 from .indicator_strip import IndicatorStrip
 from .derivative_strip import DerivativeStrip
@@ -133,6 +133,9 @@ class ChartPanel(QWidget):
         controls.addWidget(self.auto_button)
         self.compact_hidden.append(self.auto_button)
         controls.addWidget(self.small_button("最新", lambda: self.canvas.latest()))
+        self.date_jump_button = self.small_button("跳转", self.jump_to_date)
+        self.date_jump_button.setToolTip("跳转到指定日期")
+        controls.addWidget(self.date_jump_button)
         self.max_button = self.small_button("放大", self.maximize)
         controls.addWidget(self.max_button)
         self.compact_hidden.append(self.max_button)
@@ -402,6 +405,18 @@ class ChartPanel(QWidget):
         self.service.chart_feed.window_attempts.clear()
         self.ensure_view()
         self.load_older()
+
+    def jump_to_date(self):
+        canvas = self.canvas
+        center = (canvas.left_time+canvas.count*canvas.interval/2 if canvas.left_time is not None
+                  else (canvas.times[-1] if canvas.times else QDateTime.currentDateTime().toMSecsSinceEpoch()))
+        dialog = DateJumpDialog(center, self)
+        try:
+            if dialog.exec() == dialog.DialogCode.Accepted:
+                canvas.jump_to_time(dialog.timestamp())
+                self.ensure_view()
+        finally:
+            dialog.deleteLater()
 
     def maybe_warm(self):
         if not self.isVisible() or not self.service.running or self.warm_pending:

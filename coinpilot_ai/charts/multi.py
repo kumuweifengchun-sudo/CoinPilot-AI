@@ -148,6 +148,7 @@ class MultiChart(QWidget):
                 target.canvas._plot_revision += 1
                 target.canvas.update()
                 target.canvas.save_timer.start()
+                target.schedule_range()
         finally:
             self.syncing = False
 

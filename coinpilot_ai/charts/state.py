@@ -10,6 +10,7 @@ from coinpilot_ai.market.intervals import BARS
 from .position import POSITION_TOOLS
 TOOLS = {"cursor": "光标", "trend": "趋势线", "horizontal": "水平线", "ray": "射线",
          "vertical": "竖线", "rectangle": "矩形", "text": "文字", "fib": "斐波拉契", "measure": "测距",
+         "price_pattern": "复制走势",
          **POSITION_TOOLS}
 OBJECT_NAMES = dict(TOOLS, region="填色区域")
 def default_emas():

@@ -11,8 +11,32 @@ from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QColorDialog, QComboB
 from coinpilot_ai.market.intervals import BARS
 from coinpilot_ai.charts.state import OBJECT_NAMES, DEFAULT_EMAS, validate_emas
 from coinpilot_ai.charts.position import POSITION_TOOLS, position_metrics
+from coinpilot_ai.charts.pattern import MAX_PATTERN_POINTS, projected_prices
 from coinpilot_ai.ui.common import button
 from coinpilot_ai.ui.theme import color as theme_color
+
+
+class DateJumpDialog(QDialog):
+    """使用本地时间选择图表视口中心。"""
+
+    def __init__(self, stamp, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("跳转到日期")
+        self.setMinimumWidth(290)
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("选择日期和时间（本机时间）"))
+        self.date = QDateTimeEdit(QDateTime.fromMSecsSinceEpoch(int(stamp)))
+        self.date.setCalendarPopup(True)
+        self.date.setDisplayFormat("yyyy-MM-dd HH:mm")
+        self.date.setMaximumDateTime(QDateTime.currentDateTime())
+        layout.addWidget(self.date)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def timestamp(self):
+        return self.date.dateTime().toMSecsSinceEpoch()
 
 
 class ColorButton(QPushButton):
@@ -136,6 +160,7 @@ class DrawingDialog(QDialog):
         for title, widget in (("颜色", self.color), ("线宽", self.width), ("线型", self.style)):
             form.addRow(title, widget)
         self.fill_color = self.fill_opacity = None
+        self.pattern_opacity = None
         if obj['tool'] in ('rectangle', 'region'):
             self.fill_color = ColorButton(obj.get('fill_color', obj['color']))
             self.fill_opacity = QSpinBox()
@@ -144,6 +169,15 @@ class DrawingDialog(QDialog):
             self.fill_opacity.setValue(round(obj.get('fill_opacity', 24/255*100)))
             form.addRow('填充颜色', self.fill_color)
             form.addRow('不透明度（0 为不填充）', self.fill_opacity)
+        elif obj['tool'] == 'price_pattern':
+            self.pattern_opacity = QSpinBox()
+            self.pattern_opacity.setRange(10, 100)
+            self.pattern_opacity.setSuffix('%')
+            self.pattern_opacity.setValue(int(obj.get('opacity', 75)))
+            form.addRow('走势线不透明度', self.pattern_opacity)
+            source = QDateTime.fromMSecsSinceEpoch(int(obj['source_start'])).toString('yyyy-MM-dd HH:mm')
+            end = QDateTime.fromMSecsSinceEpoch(int(obj['source_end'])).toString('yyyy-MM-dd HH:mm')
+            form.addRow('历史来源', QLabel(f"{source} — {end} · {len(obj['closes'])} 根"))
         self.text = QLineEdit(obj.get("text", ""))
         if obj["tool"] == "text":
             form.addRow("文字", self.text)
@@ -193,6 +227,8 @@ class DrawingDialog(QDialog):
         for bar in BARS:
             check = QCheckBox(bar)
             check.setChecked(bar in obj["bars"])
+            if obj['tool'] == 'price_pattern':
+                check.setEnabled(False)
             self.bars[bar] = check
             row.addWidget(check)
         root.addLayout(row)
@@ -247,6 +283,12 @@ class DrawingDialog(QDialog):
                                     price if field.text() == f'{price:.12g}' else float(field.text())])
             if any(not math.isfinite(a[1]) or abs(a[1]) > 1e20 for a in anchors):
                 raise ValueError("锚点价格必须是有限数值")
+            if self.result_object['tool'] == 'price_pattern':
+                closes = [float(value) for value in self.result_object['closes']]
+                if not 2 <= len(closes) <= MAX_PATTERN_POINTS or any(
+                        not math.isfinite(value) or value <= 0 for value in closes):
+                    raise ValueError('历史走势数据无效')
+                projected_prices(closes, anchors[0][1])
             levels = []
             if self.levels is not None:
                 for row in range(self.levels.rowCount()):
@@ -267,6 +309,8 @@ class DrawingDialog(QDialog):
                     self.result_object["levels"] = levels
                 if self.fill_color is not None:
                     self.result_object.update(fill_color=self.fill_color.color, fill_opacity=self.fill_opacity.value())
+                if self.pattern_opacity is not None:
+                    self.result_object['opacity'] = self.pattern_opacity.value()
                 if self.notional is not None:
                     self.result_object['notional_usdt'] = self.notional.text().strip()
             self.result_object['name'] = name
