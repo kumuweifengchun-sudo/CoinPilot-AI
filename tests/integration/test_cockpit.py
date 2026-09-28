@@ -50,6 +50,39 @@ SPEC = {"instId": "BTC-USDT-SWAP", "state": "live", "ctType": "linear", "settleC
         "lotSz": ".01", "minSz": ".01", "tickSz": ".1", "ctVal": ".01"}
 
 
+def test_mini_background_requirements_and_idempotent_start(service, monkeypatch):
+    assert not service.needs_background_monitoring
+    service.store.put("rule", "disabled", {"enabled": False}, service.environment)
+    assert not service.needs_background_monitoring
+    service.store.put("rule", "enabled", {"enabled": True}, service.environment)
+    assert service.needs_background_monitoring
+    service.store.delete("rule", "enabled", service.environment)
+    service.api.credentials = {"key": "offline-test"}
+    assert service.needs_background_monitoring
+    service.api.credentials = {}
+    service.environment = "paper"
+    assert service.needs_background_monitoring
+    service.environment = "demo"
+    calls = []
+    monkeypatch.setattr(service.chart_feed, "activate", lambda: calls.append("chart"))
+    monkeypatch.setattr(service, "refresh_market", lambda: calls.append("market"))
+    monkeypatch.setattr(service, "_tick", lambda: calls.append("tick"))
+    service.start()
+    service.start()
+    assert calls == ["chart", "market", "tick"]
+    assert service.timer.isActive()
+
+
+def test_unchanged_order_poll_does_not_rewrite_database(service):
+    row = {"ordId": "test-order", "state": "live", "accFillSz": "0", "uTime": "1"}
+    service._observe_order(row)
+    before = service.store.db.total_changes
+    service._observe_order(dict(row))
+    assert service.store.db.total_changes == before
+    service._observe_order(dict(row, accFillSz="1"))
+    assert service.store.get("orders", "test-order", scope=service.scope)["accFillSz"] == "1"
+
+
 def payload(draft, positions=None, mode="net_mode", **kwargs):
     return draft.payload(SPEC, {"posMode": mode, "time": 100}, positions or [],
                          {"price": "60000", "source": "okx", "time": 100}, kwargs.get("now", 100), "cw123")

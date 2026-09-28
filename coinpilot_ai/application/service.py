@@ -144,11 +144,18 @@ class CockpitService(QObject):
             self.updated.emit('history')
 
     def start(self):
+        if self.running or self.closed:
+            return
         self.running = True
+        self.last_heartbeat = time.monotonic()
         self.chart_feed.activate()
         self.timer.start()
         self.refresh_market()
         self._tick()
+
+    @property
+    def needs_background_monitoring(self):
+        return self.account_connected or any(rule.get("enabled", True) for _, rule in self.rules())
 
     def _instruments(self, rows, error):
         if self.closed:
@@ -418,7 +425,8 @@ class CockpitService(QObject):
         self.engine.invalidate()
         self.quotes.clear()
         self.account["time"] = 0
-        self.refresh_market()
+        if self.running:
+            self.refresh_market()
         self.updated.emit("proxy")
 
     def rules(self):
@@ -464,8 +472,10 @@ class CockpitService(QObject):
             return
         prior = self.store.get("order_seen", key, None, self.scope)
         marker = state + ":" + row.get("accFillSz", "")
-        self.store.put("orders", key, row, self.scope)
-        self.store.put("order_seen", key, marker, self.scope)
+        if self.store.get("orders", key, None, self.scope) != row:
+            self.store.put("orders", key, row, self.scope)
+        if prior != marker:
+            self.store.put("order_seen", key, marker, self.scope)
         if prior == marker or int(row.get("uTime") or "0") / 1000 < self.started_at:
             return
         if state not in ("filled", "partially_filled", "canceled", "failed"):

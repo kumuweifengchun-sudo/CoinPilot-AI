@@ -6,7 +6,7 @@ from decimal import Decimal
 import math
 
 from PyQt6.QtCore import QPointF, QRectF, Qt
-from PyQt6.QtGui import QColor, QFontMetricsF, QPainter, QPixmap
+from PyQt6.QtGui import QColor, QFontMetricsF, QPainter, QPainterPath, QPen, QPixmap
 
 from coinpilot_ai.market.providers import split_symbol
 
@@ -30,18 +30,44 @@ def snap_point(painter, x, y):
     return inverse.map(QPointF(round(physical.x()), round(physical.y())))
 
 
-def draw_price(painter, rect, text, *, align_left=False):
+def contrast_text_color(background):
+    """按线性亮度选取对比度更高的黑色或白色。"""
+    channels = [value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4
+                for value in (background.redF(), background.greenF(), background.blueF())]
+    luminance = sum(value * weight for value, weight in zip(channels, (0.2126, 0.7152, 0.0722)))
+    return QColor("#000000" if luminance > 0.179 else "#FFFFFF")
+
+
+def draw_price(painter, rect, text, *, align_left=False, background=None, background_offset=0):
     metrics = QFontMetricsF(painter.font(), painter.device())
     baseline = rect.center().y() + (metrics.ascent() - metrics.descent()) / 2
     x = rect.left() if align_left else rect.right() - price_text_width(text, metrics)
+
+    def draw_glyph(x, glyph, width):
+        foreground = painter.pen().color()
+        if background is not None and not background.isNull():
+            column = min(background.width() - 1, max(0, round(x + width / 2 + background_offset)))
+            foreground = contrast_text_color(background.pixelColor(column, 0))
+        point = snap_point(painter, x, baseline)
+        # 细描边兜底复杂壁纸、采样失败和窗口刚移动时的短暂颜色滞后。
+        outline = QPainterPath()
+        outline.addText(point, painter.font(), glyph)
+        painter.save()
+        painter.strokePath(outline, QPen(contrast_text_color(foreground), 1.0,
+                                        Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
+                                        Qt.PenJoinStyle.RoundJoin))
+        painter.setPen(foreground)
+        painter.drawText(point, glyph)
+        painter.restore()
+
     if not text or not all(char in "0123456789,." for char in text):
-        painter.drawText(snap_point(painter, x, baseline), text)
+        draw_glyph(x, text, metrics.horizontalAdvance(text))
         return
     digit_width = max(metrics.horizontalAdvance(str(digit)) for digit in range(10))
     for char in text:
         actual_width = metrics.horizontalAdvance(char)
         cell_width = digit_width if char.isdigit() else actual_width
-        painter.drawText(snap_point(painter, x + (cell_width - actual_width) / 2, baseline), char)
+        draw_glyph(x + (cell_width - actual_width) / 2, char, actual_width)
         x += cell_width
 
 
@@ -114,7 +140,8 @@ def ticker_size(quotes, decimals, size, mini=False, device=None):
     return math.ceil(width + 1), max(76, int(size * 1.5 + 34))
 
 
-def draw_ticker(painter, rect, quote, precision, size, opacity, sample=False, mini=False):
+def draw_ticker(painter, rect, quote, precision, size, opacity, sample=False, mini=False,
+                price_background=None, background_offset=0):
     from coinpilot_ai.ui.theme import color
     painter.save()
     render_hints(painter)
@@ -136,7 +163,8 @@ def draw_ticker(painter, rect, quote, precision, size, opacity, sample=False, mi
         painter.setFont(font(12, True, latin=True))
         text_rect = QRectF(icon_rect.right() + 4, rect.y(), rect.width() - 46, rect.height())
         painter.setPen(QColor(color("warning" if quote.error else "mini_text")))
-        draw_price(painter, text_rect, quote.price_text(precision), align_left=True)
+        draw_price(painter, text_rect, quote.price_text(precision), align_left=True,
+                   background=price_background, background_offset=background_offset)
         if quote.error:
             painter.drawText(QRectF(rect.right() - 15, rect.y(), 9, rect.height()),
                              Qt.AlignmentFlag.AlignCenter, "!")
@@ -153,7 +181,8 @@ def draw_ticker(painter, rect, quote, precision, size, opacity, sample=False, mi
     painter.setFont(font(size, True, latin=True))
     painter.setPen(QColor(color("mini_text")))
     painter.drawText(QRectF(left, top, rect.width() - 36, size + 4), Qt.AlignmentFlag.AlignLeft, base)
-    draw_price(painter, QRectF(left, top, rect.right() - left - 18, size + 4), quote.price_text(precision))
+    draw_price(painter, QRectF(left, top, rect.right() - left - 18, size + 4), quote.price_text(precision),
+               background=price_background, background_offset=background_offset)
     painter.setFont(font(11))
     painter.setPen(QColor(color("text_muted")))
     painter.drawText(QRectF(left, top + size + 8, 220, 18), Qt.AlignmentFlag.AlignLeft,

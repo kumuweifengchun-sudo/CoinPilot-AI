@@ -4,12 +4,13 @@ from copy import deepcopy
 from decimal import Decimal, ROUND_HALF_UP
 import math
 
-from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QPointF, QRect, QRectF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import QApplication, QColorDialog, QInputDialog, QMenu, QToolTip, QWidget
 
 from coinpilot_ai.market.intervals import BARS
 from coinpilot_ai.charts.state import default_emas, drawing, ema_values, name_drawings
+from coinpilot_ai.charts.position import POSITION_TOOLS, position_metrics
 from .render import ChartRenderer
 from .regions import enclosed_region
 from coinpilot_ai.market.indicators import IndicatorResult, calculate
@@ -23,6 +24,7 @@ class CandleChart(ChartRenderer, QWidget):
     tool_finished = pyqtSignal()
     view_changed = pyqtSignal()
     magnet_changed = pyqtSignal(bool)
+    selection_changed = pyqtSignal()
     crosshair_changed = pyqtSignal(object)
     price_alert_requested = pyqtSignal(str, str, str)
     order_requested = pyqtSignal(str, str, str, str)
@@ -44,6 +46,7 @@ class CandleChart(ChartRenderer, QWidget):
         self.tool = "cursor"
         self.preview = self.pointer = self.drag = None
         self.pending_draw = None
+        self.position_stage = 0
         self.draw_click_timer = QTimer(self)
         self.draw_click_timer.setSingleShot(True)
         self.draw_click_timer.setTimerType(Qt.TimerType.PreciseTimer)
@@ -79,6 +82,7 @@ class CandleChart(ChartRenderer, QWidget):
         self.setMinimumSize(260, 180)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setStyleSheet('QToolTip { font-size: 11px; padding: 3px 6px; }')
         events.changed.connect(self.apply_theme)
         if self.book:
             self.book.changed.connect(self.book_changed)
@@ -103,8 +107,10 @@ class CandleChart(ChartRenderer, QWidget):
         self._series_revision = -1
         self._plot_revision += 1
         self.pointer = self.drag = self.preview = None
+        self.position_stage = 0
         self.snap_target = None
         self.selected_id = self._history_latch = None
+        self.selection_changed.emit()
         view = self.book.view(environment, instrument, bar) if self.book else {}
         if self.view_key and self.book:
             view = self.book.store.get("chart_pane_view", f"{self.view_key}/{environment}/{instrument}/{bar}", view)
@@ -140,6 +146,7 @@ class CandleChart(ChartRenderer, QWidget):
             self.objects = self.book.objects(*key)
             if not any(o["id"] == self.selected_id for o in self.objects):
                 self.selected_id = None
+            self.selection_changed.emit()
         elif kind == "view" and not self.view_key and not self._saving and key == (self.environment, self.instrument, self.bar):
             self.restore_view(self.book.view(*key))
         self.update()
@@ -366,13 +373,23 @@ class CandleChart(ChartRenderer, QWidget):
         if self.tool != "cursor" and not self.drag:
             anchor = self.drawing_anchor(self.pointer, modifiers)
             if self.preview:
-                self.preview["anchors"][-1] = anchor
+                if self.tool in POSITION_TOOLS:
+                    index = 1 if self.position_stage == 1 else 2
+                    self.preview["anchors"][index] = ([max(self.preview['anchors'][0][0]+self.interval, anchor[0]), anchor[1]]
+                                                      if index == 1 else [self.preview['anchors'][1][0], anchor[1]])
+                else:
+                    self.preview["anchors"][-1] = anchor
         elif self.drag and self.drag["mode"] == "object" and self.drag["handle"] is not None:
             obj = self.selected()
             if obj:
                 handle = self.drag["handle"]
-                position = self.point(self.drag["before"]["anchors"][handle])+self.pointer-self.drag["pos"]
-                obj["anchors"][handle] = self.drawing_anchor(position, modifiers)
+                if obj['tool'] in POSITION_TOOLS:
+                    if handle < 3:
+                        position = self.point(self.drag['before']['anchors'][handle])+self.pointer-self.drag['pos']
+                        obj['anchors'][handle][1] = self.drawing_anchor(position, modifiers)[1]
+                else:
+                    position = self.point(self.drag["before"]["anchors"][handle])+self.pointer-self.drag["pos"]
+                    obj["anchors"][handle] = self.drawing_anchor(position, modifiers)
         self.request_frame()
 
     def change_view(self):
@@ -413,6 +430,7 @@ class CandleChart(ChartRenderer, QWidget):
     def set_tool(self, tool):
         self.cancel_pending_draw()
         self.tool, self.preview, self.drag = tool, None, None
+        self.position_stage = 0
         self.snap_target = None
         self.setCursor(Qt.CursorShape.ArrowCursor if tool == "cursor" else Qt.CursorShape.CrossCursor)
         self.setFocus()
@@ -432,6 +450,7 @@ class CandleChart(ChartRenderer, QWidget):
             if self.selected_id in removed:
                 self.selected_id = None
             self.persist_objects()
+            self.selection_changed.emit()
         return len(removed)
 
     def hit_test(self, pos):
@@ -439,12 +458,14 @@ class CandleChart(ChartRenderer, QWidget):
         self.object_layers()
         obj = self.selected()
         if obj and not obj.get("hidden") and self.bar in obj.get("bars", BARS):
-            for i, anchor in enumerate(obj["anchors"]):
-                p = self.point(anchor)
+            handles = [self.point(anchor) for anchor in obj["anchors"]]
+            if obj['tool'] in POSITION_TOOLS:
+                handles.append(self.point([obj['anchors'][1][0], obj['anchors'][0][1]]))
+            for i, p in enumerate(handles):
                 if abs(p.x()-pos.x()) < 9 and abs(p.y()-pos.y()) < 9:
                     return obj["id"], i
         for identity, path in reversed(list(self.hit_paths.items())):
-            if path.contains(pos):
+            if any(o['id'] == identity for o in self.objects) and path.contains(pos):
                 return identity, None
         return None, None
 
@@ -479,6 +500,7 @@ class CandleChart(ChartRenderer, QWidget):
             else:
                 identity, handle = self.hit_test(pos)
                 self.selected_id = identity
+                self.selection_changed.emit()
                 obj = self.selected()
                 if obj:
                     if not obj["locked"]:
@@ -503,6 +525,30 @@ class CandleChart(ChartRenderer, QWidget):
         self.draw_anchor(self.drawing_anchor(pos, modifiers))
 
     def draw_anchor(self, a):
+        if self.tool in POSITION_TOOLS:
+            if self.position_stage == 0:
+                self.preview = drawing(self.tool, [a, a[:], a[:]])
+                self.preview['notional_usdt'] = ''
+                self.position_stage = 1
+            elif self.position_stage == 1:
+                self.preview['anchors'][1] = [max(a[0], self.preview['anchors'][0][0]+self.interval), a[1]]
+                self.preview['anchors'][2] = [self.preview['anchors'][1][0], self.preview['anchors'][0][1]]
+                self.position_stage = 2
+            else:
+                from .dialogs import DrawingDialog
+                self.preview['anchors'][2] = [self.preview['anchors'][1][0], a[1]]
+                obj = self.preview
+                self.preview = None
+                self.position_stage = 0
+                dialog = DrawingDialog(obj, self)
+                if dialog.exec() == dialog.DialogCode.Accepted:
+                    self.objects.append(dialog.result_object)
+                    self.selected_id = obj['id']
+                    self.persist_objects()
+                    self.selection_changed.emit()
+                dialog.deleteLater()
+            self.update()
+            return
         if self.preview is not None:
             self.preview["anchors"][-1] = a
             obj = self.preview
@@ -519,6 +565,7 @@ class CandleChart(ChartRenderer, QWidget):
         self.objects.append(obj)
         self.selected_id = obj["id"]
         self.persist_objects()
+        self.selection_changed.emit()
         # 完成当前对象后清空预览，保留工具，下一次点击开始新的对象。
         self.set_tool(self.tool)
 
@@ -557,11 +604,21 @@ class CandleChart(ChartRenderer, QWidget):
             elif d["mode"] == "object":
                 obj = self.selected()
                 if obj:
-                    for i, anchor in enumerate(d["before"]["anchors"]):
-                        if d["handle"] is None or d["handle"] == i:
-                            position = self.point(anchor)+QPointF(dx, dy)
-                            obj["anchors"][i] = (self.anchor(position) if d["handle"] is None
-                                                 else self.drawing_anchor(position, event.modifiers()))
+                    if obj['tool'] in POSITION_TOOLS and d['handle'] is not None:
+                        if d['handle'] == 3:
+                            stamp = max(obj['anchors'][0][0]+self.interval,
+                                        self.anchor(self.point(d['before']['anchors'][1])+QPointF(dx, 0))[0])
+                            obj['anchors'][1][0] = obj['anchors'][2][0] = stamp
+                        else:
+                            index = d['handle']
+                            position = self.point(d['before']['anchors'][index])+QPointF(0, dy)
+                            obj['anchors'][index][1] = self.drawing_anchor(position, event.modifiers())[1]
+                    else:
+                        for i, anchor in enumerate(d["before"]["anchors"]):
+                            if d["handle"] is None or d["handle"] == i:
+                                position = self.point(anchor)+QPointF(dx, dy)
+                                obj["anchors"][i] = (self.anchor(position) if d["handle"] is None
+                                                     else self.drawing_anchor(position, event.modifiers()))
             if d["mode"] != "object":
                 self.fit_prices()
                 self.view_changed.emit()
@@ -571,9 +628,18 @@ class CandleChart(ChartRenderer, QWidget):
         if self.drag and event.button() == Qt.MouseButton.LeftButton:
             self.mouseMoveEvent(event)
             mode = self.drag["mode"]
+            if mode == 'object':
+                obj = self.selected()
+                if obj and obj['tool'] in POSITION_TOOLS:
+                    try:
+                        position_metrics(obj)
+                    except ValueError:
+                        obj.update(deepcopy(self.drag['before']))
             self.drag = None
             self.snap_target = None
             self.persist_objects() if mode == "object" else self.change_view()
+            if mode == 'object':
+                self.selection_changed.emit()
 
     def mouseDoubleClickEvent(self, event):
         if event.button() != Qt.MouseButton.LeftButton or not self.times:
@@ -584,6 +650,7 @@ class CandleChart(ChartRenderer, QWidget):
             if identity:
                 self.set_tool(self.tool)
                 self.selected_id = identity
+                self.selection_changed.emit()
                 self.edit_requested.emit(identity)
                 event.accept()
                 return
@@ -613,7 +680,7 @@ class CandleChart(ChartRenderer, QWidget):
     def copy_price(self, price, position):
         if price is not None:
             QApplication.clipboard().setText(price)
-            QToolTip.showText(self.mapToGlobal(position.toPoint()), '已复制价格：'+price, self)
+            QToolTip.showText(self.mapToGlobal(position.toPoint()), '已复制 '+price, self, QRect(), 1000)
 
     def region_at(self, position):
         if not self.times or not self.plot_rects()[0].contains(position):

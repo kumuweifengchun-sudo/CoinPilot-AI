@@ -6,6 +6,7 @@ import json
 import math
 import time
 from bisect import bisect_left
+from collections import OrderedDict
 
 from PyQt6.QtCore import QObject, QTimer, QUrl, pyqtSignal
 from PyQt6.QtWebSockets import QWebSocket
@@ -131,6 +132,7 @@ class CandleStream(QObject):
 
 class ChartFeed(QObject):
     series_changed = pyqtSignal(object)
+    INACTIVE_PAIR_LIMIT = 8
 
     def __init__(self, service):
         super().__init__(service)
@@ -149,6 +151,7 @@ class ChartFeed(QObject):
         self.series = {}
         self.indicator_cache = {}
         self.raw_indexes = {}
+        self.recent_pairs = OrderedDict()
         service.chart_book.changed.connect(self.settings_changed)
 
     def settings_changed(self, kind, _key):
@@ -158,6 +161,8 @@ class ChartFeed(QObject):
                 series.set_periods(periods)
 
     def raw_index(self, pair):
+        self.recent_pairs[pair] = None
+        self.recent_pairs.move_to_end(pair)
         rows = self.service.candles.get(pair)
         cached = self.raw_indexes.get(pair)
         if cached is None or cached[0] is not rows:
@@ -165,6 +170,36 @@ class ChartFeed(QObject):
             cached = (rows, times, dict(zip(times, rows or [])))
             self.raw_indexes[pair] = cached
         return cached
+
+    def prune_inactive(self):
+        """保留监控和请求中的数据，仅淘汰最近未使用的行情缓存，不删除业务记录。"""
+        if len(self.recent_pairs) <= self.INACTIVE_PAIR_LIMIT:
+            return
+        s = self.service
+        protected = {(s.selected, s.bar)} | s.chart_pairs | s.indicator_pairs
+        protected.update(key[0] for key in self.pending)
+        protected.update(self.repairs)
+        for _, rule in s.rules():
+            if rule.get("enabled", True):
+                protected.update((rule["instrument"], condition.get("bar", "15m"))
+                                 for condition in rule.get("conditions", [])
+                                 if condition["metric"] in ("volume_ratio", "indicator"))
+                if rule.get("trigger") == "bar":
+                    protected.add((rule["instrument"], rule.get("trigger_bar", "1m")))
+        inactive = [pair for pair in self.recent_pairs if pair not in protected]
+        for pair in inactive[:-self.INACTIVE_PAIR_LIMIT]:
+            self.recent_pairs.pop(pair, None)
+            series = self.series.pop(pair, None)
+            if series is not None:
+                series.cancel()
+                series.deleteLater()
+            for cache in (s.candles, s.candle_times, self.raw_indexes, self.indicator_cache,
+                          self.revisions, self.history_state, self.pair_status):
+                cache.pop(pair, None)
+            for cache in (self.stream_versions, self.window_attempts):
+                for key in list(cache):
+                    if key[0] == pair:
+                        cache.pop(key)
 
     def get_series(self, pair):
         series = self.series.get(pair)
@@ -276,6 +311,7 @@ class ChartFeed(QObject):
                 s.candle_times[pair] = time.time()
             else:
                 s.candle_times.pop(pair, None)
+        self.prune_inactive()
         s.updated.emit("candles")
 
     def fetch(self, inst, bar, *, older=False):
@@ -408,6 +444,8 @@ class ChartFeed(QObject):
         self.series.clear()
         self.indicator_cache.clear()
         self.raw_indexes.clear()
+        self.recent_pairs = OrderedDict.fromkeys(self.service.candles)
+        self.revisions.clear()
         self.pending.clear()
         self.history_state.clear()
         self.stream_versions.clear()

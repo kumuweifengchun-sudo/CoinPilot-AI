@@ -6,7 +6,7 @@
 
 面向个人使用的 Windows 加密交易工作台，集桌面盯盘、图表分析、规则提醒、人工确认交易、历史训练与 AI 复盘于一体。
 
-**当前源码版本：0.1.0** · Windows 10/11 · Python 3.13 · PyQt6 · SQLite · uv
+**当前源码版本见 [pyproject.toml](pyproject.toml)** · Windows 10/11 · Python 3.13 · PyQt6 · SQLite · uv
 
 默认启动显示 28 个逻辑像素高的迷你悬浮窗，需要时从托盘打开工作台。公开行情无需 API 密钥，OKX 账户交易和 AI 服务分别配置、按需使用。
 
@@ -54,9 +54,12 @@ uv run --locked coinpilot-ai.py --help
 ### 桌面盯盘与工作区
 
 - 迷你窗口显示币种与报价，支持轮播、置顶、透明度、单击刷新、长按拖动和位置保存；默认 `Alt+Z` 隐藏或恢复，也可设置开机启动。
+- 报价数字会根据附近背景明暗自动切换黑白文字，跨越深浅背景时逐位适配；细描边增强复杂背景下的可读性。
 - 迷你窗口支持 Binance、OKX、Bybit 和自动选源；工作台图表、提醒及交易使用 OKX 数据。
 - 工作台包含“工作台”“复盘”“设置”三页，支持停靠面板和命名工作区，保存布局、自选、图表及扫描筛选状态。
 - 关闭工作台只隐藏窗口，隐藏迷你窗口也不会停止后台服务；退出应用后停止监控。
+
+首次仅启动迷你窗口且没有配置账户或启用提醒时，工作台后台行情按需启动；打开工作台后继续保留后台监控。训练与回测页在首次访问时创建，已打开页面的草稿继续保留。内存、安装体积和验证方法见 [性能优化说明](docs/performance.md)。
 
 ### 图表与市场分析
 
@@ -160,6 +163,7 @@ uv run --locked python scripts/qa/verify_workbench.py
 uv run --locked python scripts/qa/verify_paper.py
 uv run --locked python scripts/qa/verify_updates.py
 uv run --locked python scripts/qa/benchmark_charts.py
+uv run --locked python scripts/qa/benchmark_memory.py --output artifacts/performance/mini.json
 ```
 
 公开接口检查会联网，不能替代私有账户、交易或 AI 服务验收：
@@ -174,13 +178,25 @@ uv run --locked python scripts/checks/check_workbench.py --direct
 
 ## Windows 打包与发行
 
-构建机需要 64 位 Python 3.13、uv 和 Inno Setup **6.5+ 的 6.x 版本**：
+构建机需要 64 位 Python 3.13、uv（支持 `uv version`）和 Inno Setup **6.5+ 的 6.x 版本**。双击根目录的 `release.cmd` 即可自动查找 Inno Setup、递增补丁版本并打包；也可以在 PowerShell 中运行：
 
 ```powershell
+.\release.cmd
+
+# 如果自动查找不到 Inno Setup，可手动指定编译器路径
 .\scripts\release\build_installer.ps1 -IsccPath "D:\Inno Setup 6\ISCC.exe"
+
+# 次版本递增，例如 0.1.1 -> 0.2.0（主版本使用 major）
+.\release.cmd -Bump minor
+
+# 指定更高的版本号，或使用当前版本重新构建
+.\release.cmd -Version 1.0.0
+.\release.cmd -Bump none
 ```
 
-构建脚本同步锁定依赖、构建目录版、执行启动检查，并输出安装包与 SHA-256 校验文件：
+默认 `-Bump patch`，例如 `0.1.0 -> 0.1.1`；支持三段或四段数字，每段不超过 65535，递增后清零较低位。`-Version` 与 `-Bump` 不能同时指定。脚本通过 `uv version --no-sync --offline` 同步 `pyproject.toml` 和 `uv.lock`，构建失败会恢复这两个文件；成功后保留新版本。同一仓库同时只能运行一个发行构建。
+
+构建脚本同步锁定依赖、运行安装器安全自检、构建目录版、执行启动检查，并输出安装包与 SHA-256 校验文件：
 
 ```text
 dist/installer/CoinPilotAI-Setup-<版本>-x64.exe

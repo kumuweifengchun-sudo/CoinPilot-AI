@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QColorDialog, QComboB
 
 from coinpilot_ai.market.intervals import BARS
 from coinpilot_ai.charts.state import OBJECT_NAMES, DEFAULT_EMAS, validate_emas
+from coinpilot_ai.charts.position import POSITION_TOOLS, position_metrics
 from coinpilot_ai.ui.common import button
 from coinpilot_ai.ui.theme import color as theme_color
 
@@ -147,16 +148,27 @@ class DrawingDialog(QDialog):
         if obj["tool"] == "text":
             form.addRow("文字", self.text)
         self.anchors = []
-        for i, (stamp, price) in enumerate(obj["anchors"]):
-            row = QHBoxLayout()
-            date = QDateTimeEdit(QDateTime.fromMSecsSinceEpoch(int(stamp)))
-            date.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
-            date.setCalendarPopup(True)
-            field = QLineEdit(f"{price:.12g}")
-            row.addWidget(date)
-            row.addWidget(field)
-            form.addRow(f"锚点 {i+1}", row)
-            self.anchors.append((date, field))
+        self.position_fields = {}
+        self.notional = None
+        if obj['tool'] in POSITION_TOOLS:
+            for index, title in enumerate(('入场价', '止盈价', '止损价')):
+                field = QLineEdit(f"{obj['anchors'][index][1]:.12g}")
+                self.position_fields[title] = field
+                form.addRow(title, field)
+            self.notional = QLineEdit(str(obj.get('notional_usdt', '')))
+            self.notional.setPlaceholderText('仓位名义价值，单位 USDT')
+            form.addRow('仓位金额 USDT', self.notional)
+        else:
+            for i, (stamp, price) in enumerate(obj["anchors"]):
+                row = QHBoxLayout()
+                date = QDateTimeEdit(QDateTime.fromMSecsSinceEpoch(int(stamp)))
+                date.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
+                date.setCalendarPopup(True)
+                field = QLineEdit(f"{price:.12g}")
+                row.addWidget(date)
+                row.addWidget(field)
+                form.addRow(f"锚点 {i+1}", row)
+                self.anchors.append((date, field))
         if obj['tool'] == 'region' and len(obj['anchors']) > 4:
             content = QWidget()
             content.setLayout(form)
@@ -199,6 +211,10 @@ class DrawingDialog(QDialog):
         self.error = QLabel()
         self.error.setWordWrap(True)
         root.addWidget(self.error)
+        if obj['tool'] in POSITION_TOOLS:
+            note = QLabel('仅用于图表测算；预计盈亏不含手续费、资金费、滑点或杠杆。')
+            note.setWordWrap(True)
+            root.addWidget(note)
         dialog_buttons(self, root)
 
     def add_level(self, level):
@@ -215,10 +231,20 @@ class DrawingDialog(QDialog):
             if not name:
                 raise ValueError('请输入绘图对象名称')
             anchors = []
-            for (date, field), (stamp, price) in zip(self.anchors, self.result_object['anchors']):
-                edited_time = date.dateTime().toMSecsSinceEpoch()
-                anchors.append([stamp if edited_time == int(stamp) else edited_time,
-                                price if field.text() == f'{price:.12g}' else float(field.text())])
+            if self.notional is not None:
+                for index, title in enumerate(('入场价', '止盈价', '止损价')):
+                    stamp, price = self.result_object['anchors'][index]
+                    field = self.position_fields[title]
+                    anchors.append([stamp, price if field.text() == f'{price:.12g}' else float(field.text())])
+                candidate = dict(self.result_object, anchors=anchors,
+                                 notional_usdt=self.notional.text().strip())
+                if not (self.result_object['locked'] and self.locked.isChecked()):
+                    position_metrics(candidate)
+            else:
+                for (date, field), (stamp, price) in zip(self.anchors, self.result_object['anchors']):
+                    edited_time = date.dateTime().toMSecsSinceEpoch()
+                    anchors.append([stamp if edited_time == int(stamp) else edited_time,
+                                    price if field.text() == f'{price:.12g}' else float(field.text())])
             if any(not math.isfinite(a[1]) or abs(a[1]) > 1e20 for a in anchors):
                 raise ValueError("锚点价格必须是有限数值")
             levels = []
@@ -241,6 +267,8 @@ class DrawingDialog(QDialog):
                     self.result_object["levels"] = levels
                 if self.fill_color is not None:
                     self.result_object.update(fill_color=self.fill_color.color, fill_opacity=self.fill_opacity.value())
+                if self.notional is not None:
+                    self.result_object['notional_usdt'] = self.notional.text().strip()
             self.result_object['name'] = name
         except (ValueError, AttributeError) as exc:
             self.error.setText(str(exc) or "请检查锚点及比例")

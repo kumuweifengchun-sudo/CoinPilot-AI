@@ -24,6 +24,7 @@ def unified(app, tmp_path, monkeypatch):
     service = CockpitService(config, tmp_path/'test.db', tmp_path/'icons', vault=EmptyVault(), autostart=False)
     service.fetch_candles = lambda *_: None
     service.refresh_market = lambda: None
+    service.start = lambda: None
     monkeypatch.setattr(desktop, 'CockpitService', lambda *a, **kw: service)
     widget = CoinPilotWidget(config, SettingsStore(tmp_path/'config.json'), start_requests=False)
     widget.reload_icons = lambda **kw: None

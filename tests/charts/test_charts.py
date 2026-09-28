@@ -16,6 +16,7 @@ from coinpilot_ai.charts.canvas import CandleChart
 from coinpilot_ai.charts.dialogs import DrawingDialog, EmaDialog
 from coinpilot_ai.market.candles import CandleStream, valid_candles
 from coinpilot_ai.charts.state import OBJECT_NAMES, ChartBook, drawing, ema_values, trade_lines
+from coinpilot_ai.charts.position import position_metrics
 from coinpilot_ai.market.series import ChartSeries
 from coinpilot_ai.application.service import CockpitService
 from coinpilot_ai.core.store import Store
@@ -42,6 +43,36 @@ def test_shared_indicator_result_is_reused_for_same_pair_and_revision(service):
     service.chart_feed.merge(pair, candles(31))
     second = service.chart_feed.indicator(series, spec)
     assert second is not first and len(second.times) == 31
+
+
+def test_inactive_cache_is_bounded_without_evicting_monitoring_or_pending(service):
+    feed = service.chart_feed
+    selected = (service.selected, service.bar)
+    chart, indicator, rule_pair, pending = [(f"{name}-USDT-SWAP", "15m")
+                                          for name in ("ETH", "SOL", "XRP", "DOGE")]
+    service.chart_pairs = {chart}
+    service.indicator_pairs = {indicator}
+    service.store.put("rule", "active", {"instrument": rule_pair[0], "enabled": True,
+        "conditions": [{"metric": "indicator", "bar": rule_pair[1]}]}, service.environment)
+    feed.pending.add((pending, False))
+    protected = {selected, chart, indicator, rule_pair, pending}
+    for pair in protected:
+        feed.merge(pair, candles(5))
+        feed.get_series(pair)
+    inactive = [(f"COIN{i}-USDT-SWAP", "15m") for i in range(20)]
+    for pair in inactive:
+        feed.merge(pair, candles(5))
+        feed.get_series(pair)
+    assert protected <= service.candles.keys()
+    assert set(service.candles) - protected == set(inactive[-feed.INACTIVE_PAIR_LIMIT:])
+    assert inactive[0] not in feed.series and inactive[0] not in feed.raw_indexes
+    assert inactive[0] not in feed.revisions
+    # 被淘汰的公开行情可重新加载；当前监控数据不截短。
+    feed.merge(inactive[0], candles(6))
+    assert len(service.candles[inactive[0]]) == 6
+    assert len(service.candles[selected]) == 5
+    feed.reset()
+    assert len(feed.recent_pairs) == len(service.candles)
 
 
 def test_cross_period_indicator_waits_for_source_bar_close(service):
@@ -1233,3 +1264,114 @@ def test_coalesced_updates_preserve_earliest_affected_time(service, app):
         window.close()
         window.deleteLater()
         app.processEvents()
+
+
+@pytest.mark.parametrize('tool', ['long_position', 'short_position'])
+def test_position_drawing_creation_edit_drag_and_restore(chart, app, monkeypatch, tool):
+    chart.set_magnet(False)
+    chart.set_tool(tool)
+    chart.fit_prices()
+    entry = (chart.low + chart.high) / 2
+    offset = (chart.high - chart.low) * .22
+    target = entry + offset if tool == 'long_position' else entry - offset
+    stop = entry - offset if tool == 'long_position' else entry + offset
+    opened = []
+    def finish(dialog):
+        opened.append(dialog)
+        assert dialog.position_fields['入场价'].text()
+        dialog.notional.setText('2000')
+        dialog.accept()
+        return dialog.result()
+    monkeypatch.setattr(DrawingDialog, 'exec', finish)
+    for index, (x, price) in enumerate(((250, entry), (520, target), (510, stop))):
+        QTest.mouseClick(chart, Qt.MouseButton.LeftButton,
+                         pos=QPoint(x, round(chart.y(price))))
+        assert chart.position_stage == (index + 1) % 3
+    assert len(opened) == 1 and len(chart.objects) == 1
+    obj = chart.objects[0]
+    assert obj['tool'] == tool and obj['notional_usdt'] == '2000'
+    assert obj['anchors'][1][0] == obj['anchors'][2][0]
+    assert position_metrics(obj)['profit_usdt'] > 0
+    original = deepcopy(obj)
+    chart.set_tool('cursor')
+    target_point = chart.point(obj['anchors'][1])
+    drag(chart, (round(target_point.x()), round(target_point.y())),
+         (round(target_point.x()), round(target_point.y()) + (-15 if tool == 'long_position' else 15)))
+    assert chart.objects[0]['anchors'][1][1] != original['anchors'][1][1]
+    assert position_metrics(chart.objects[0])['profit_usdt'] != position_metrics(original)['profit_usdt']
+    chart.book.undo('demo', chart.instrument)
+    assert chart.objects == [original]
+    chart.book.undo('demo', chart.instrument, redo=True)
+    restored = ChartBook(chart.service.store).objects('demo', chart.instrument)
+    assert restored == chart.objects
+    before_amount = position_metrics(chart.objects[0])['profit_usdt']
+    edit = DrawingDialog(chart.objects[0])
+    edit.notional.setText('4000')
+    edit.accept()
+    assert edit.result()
+    chart.objects[0] = edit.result_object
+    chart.persist_objects()
+    assert position_metrics(chart.objects[0])['profit_usdt'] == before_amount * 2
+    edit.deleteLater()
+    restored = deepcopy(chart.objects)
+    chart.zoom_time(.8, 400)
+    chart.set_context('demo', chart.instrument, '1H')
+    assert chart.objects == restored
+
+
+def test_position_drawing_cancel_and_invalid_property_do_not_save(chart, app, monkeypatch):
+    chart.set_magnet(False)
+    chart.set_tool('long_position')
+    chart.fit_prices()
+    entry = (chart.low + chart.high) / 2
+    offset = (chart.high - chart.low) * .22
+    QTest.mouseClick(chart, Qt.MouseButton.LeftButton, pos=QPoint(250, round(chart.y(entry))))
+    QTest.keyClick(chart, Qt.Key.Key_Escape)
+    assert not chart.objects and chart.preview is None
+    monkeypatch.setattr(DrawingDialog, 'exec', lambda dialog: 0)
+    chart.set_tool('long_position')
+    for x, price in ((250, entry), (520, entry+offset), (510, entry-offset)):
+        QTest.mouseClick(chart, Qt.MouseButton.LeftButton,
+                         pos=QPoint(x, round(chart.y(price))))
+    assert not chart.objects and not chart.book.objects('demo', chart.instrument)
+    obj = drawing('long_position', [[1, 101], [2, 103], [2, 99]])
+    obj['notional_usdt'] = ''
+    dialog = DrawingDialog(obj)
+    dialog.accept()
+    assert not dialog.result() and dialog.error.text()
+    dialog.notional.setText('1000')
+    dialog.position_fields['止损价'].setText('104')
+    dialog.accept()
+    assert not dialog.result()
+    dialog.position_fields['止损价'].setText('99')
+    dialog.accept()
+    assert dialog.result()
+    dialog.deleteLater()
+
+
+def test_position_handles_reject_invalid_drag_and_respect_lock(chart):
+    chart.set_magnet(False)
+    chart.fit_prices()
+    entry = (chart.low + chart.high) / 2
+    offset = (chart.high - chart.low) * .2
+    start, end = chart.times[-75], chart.times[-35]
+    obj = drawing('long_position', [[start, entry], [end, entry+offset], [end, entry-offset]])
+    obj['notional_usdt'] = '1500'
+    chart.objects = [obj]
+    chart.persist_objects()
+    chart.selected_id = obj['id']
+    before = deepcopy(chart.objects[0])
+    edge = chart.point([end, entry])
+    drag(chart, (round(edge.x()), round(edge.y())), (round(edge.x()+35), round(edge.y())))
+    moved = deepcopy(chart.objects[0])
+    assert moved['anchors'][1][0] == moved['anchors'][2][0] > end
+    assert moved['anchors'][0] == before['anchors'][0]
+    target = chart.point(moved['anchors'][1])
+    drag(chart, (round(target.x()), round(target.y())),
+         (round(target.x()), round(chart.y(entry-offset*.5))))
+    assert chart.objects[0] == moved
+    chart.objects[0]['locked'] = True
+    chart.persist_objects()
+    locked = deepcopy(chart.objects[0])
+    drag(chart, (round(edge.x()), round(edge.y())), (round(edge.x()+70), round(edge.y())))
+    assert chart.objects[0] == locked

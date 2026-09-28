@@ -50,6 +50,26 @@ def test_single_chart_placeholder_and_default_geometry(workspace, app):
     assert window.chart.trading
 
 
+def test_research_pages_are_lazy_and_preserve_drafts(workspace, app):
+    window, service = workspace
+    assert window._replay is None and window._strategy_page is None
+    market_path = service.store.path.with_suffix(".market.sqlite3")
+    assert not market_path.exists()
+    window.pages.setCurrentIndex(1)
+    assert window._replay is None and window._strategy_page is None
+    window.review_tabs.setCurrentIndex(1)
+    app.processEvents()
+    replay = window.replay
+    assert market_path.exists() and replay.isVisible()
+    replay.symbol.setText("ETH-USDT-SWAP")
+    window.review_tabs.setCurrentIndex(2)
+    assert window._strategy_page is not None
+    window.close()
+    window.show()
+    window.review_tabs.setCurrentIndex(1)
+    assert window.replay is replay and replay.symbol.text() == "ETH-USDT-SWAP"
+
+
 @pytest.mark.parametrize("sizes", [(2, 1), (4, 1), (6, 1), (6, 4, 2, 1, 4, 1)])
 def test_chart_layout_switches_fill_available_space(workspace, app, sizes):
     window, _ = workspace

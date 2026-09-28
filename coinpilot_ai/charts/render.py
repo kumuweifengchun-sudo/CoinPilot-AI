@@ -7,6 +7,7 @@ from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPainterPathStroker, QPe
 
 from coinpilot_ai.market.intervals import BARS
 from coinpilot_ai.ui.theme import color
+from .position import POSITION_TOOLS, position_metrics
 
 
 class ChartRenderer:
@@ -19,7 +20,14 @@ class ChartRenderer:
             path.moveTo(start)
             path.lineTo(end)
         tool = obj["tool"]
-        if tool == "horizontal":
+        if tool in POSITION_TOOLS:
+            entry, target, stop = (anchor[1] for anchor in obj['anchors'])
+            x0, x1 = sorted((self.x(obj['anchors'][0][0]), self.x(obj['anchors'][1][0])))
+            for price in (entry, target, stop):
+                line(QPointF(x0, self.y(price)), QPointF(x1, self.y(price)))
+            line(QPointF(x1, min(self.y(target), self.y(stop))),
+                 QPointF(x1, max(self.y(target), self.y(stop))))
+        elif tool == "horizontal":
             line(QPointF(main.left(), a.y()), QPointF(main.right(), a.y()))
         elif tool == "vertical":
             line(QPointF(a.x(), main.top()), QPointF(a.x(), main.bottom()))
@@ -67,6 +75,9 @@ class ChartRenderer:
             path, points, labels = self.object_path(obj)
             if not path.boundingRect().adjusted(-120, -30, 120, 30).intersects(main):
                 continue
+            if obj['tool'] in POSITION_TOOLS:
+                self.draw_position_object(p, obj, path, main)
+                continue
             style = {"solid": Qt.PenStyle.SolidLine, "dash": Qt.PenStyle.DashLine, "dot": Qt.PenStyle.DotLine}[obj["style"]]
             p.setPen(QPen(QColor(obj["color"]), obj["width"], style))
             if obj["tool"] == "text":
@@ -103,6 +114,57 @@ class ChartRenderer:
                     p.drawEllipse(point, 4, 4)
                 p.setBrush(Qt.BrushStyle.NoBrush)
         p.restore()
+
+    def draw_position_object(self, p, obj, path, main):
+        start = self.x(obj['anchors'][0][0])
+        end = self.x(obj['anchors'][1][0])
+        left, right = sorted((start, end))
+        entry, target, stop = (self.y(anchor[1]) for anchor in obj['anchors'])
+        gain, loss = QColor(color('positive')), QColor(color('negative'))
+        gain.setAlpha(42)
+        loss.setAlpha(42)
+        p.fillRect(QRectF(left, min(entry, target), right-left, abs(entry-target)), gain)
+        p.fillRect(QRectF(left, min(entry, stop), right-left, abs(entry-stop)), loss)
+        p.setPen(QPen(QColor(color('positive')), 1.3))
+        p.drawLine(QPointF(left, target), QPointF(right, target))
+        p.setPen(QPen(QColor(color('text')), 1.3))
+        p.drawLine(QPointF(left, entry), QPointF(right, entry))
+        p.setPen(QPen(QColor(color('negative')), 1.3))
+        p.drawLine(QPointF(left, stop), QPointF(right, stop))
+        p.setPen(QPen(QColor(obj['color']), obj['width']))
+        p.drawLine(QPointF(right, min(target, stop)), QPointF(right, max(target, stop)))
+        try:
+            result = position_metrics(obj)
+        except ValueError:
+            result = None  # 未完成绘制或拖动经过无效价格时，仅预览图形。
+        if result:
+            labels = ((target, entry, f"预计盈利 +{result['profit_usdt']:,.2f} U · {result['profit_percent']:.2f}%", 'positive'),
+                      (stop, entry, f"预计亏损 -{result['loss_usdt']:,.2f} U · {result['loss_percent']:.2f}%", 'negative'))
+            for boundary, middle, text, token in labels:
+                y = (boundary+middle)/2
+                if not main.top()+10 <= y <= main.bottom()-4 or right-left < 55:
+                    continue
+                available = min(main.right(), right)-max(main.left(), left)-8
+                if available < 45:
+                    continue
+                metrics = p.fontMetrics()
+                shown = metrics.elidedText(text, Qt.TextElideMode.ElideRight, int(available))
+                x = max(main.left()+4, min(left+5, main.right()-available))
+                p.fillRect(QRectF(x-2, y-11, available+4, 19), QColor(color('surface_raised')))
+                p.setPen(QColor(color(token)))
+                p.drawText(QPointF(x, y+3), shown)
+        stroker = QPainterPathStroker()
+        stroker.setWidth(max(10, obj['width']+6))
+        hit = stroker.createStroke(path)
+        hit.addRect(QRectF(left, min(target, stop), right-left, abs(target-stop)))
+        self.hit_paths[obj['id']] = hit
+        if obj['id'] == self.selected_id:
+            p.setBrush(QColor(color('surface')))
+            p.setPen(QPen(QColor(color('text_muted' if obj['locked'] else 'text_secondary')), 1))
+            for point in (self.point(anchor) for anchor in obj['anchors']):
+                p.drawEllipse(point, 4, 4)
+            p.drawEllipse(QPointF(right, entry), 4, 4)
+            p.setBrush(Qt.BrushStyle.NoBrush)
 
     def price_label(self, p, price, text, label_color, *, line=True):
         main, _ = self.plot_rects()

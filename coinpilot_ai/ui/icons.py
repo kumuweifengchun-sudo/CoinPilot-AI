@@ -18,6 +18,8 @@ ALIASES = {
 CUSTOM = {
     "trend": '<path d="M5 18 19 6"/><circle cx="5" cy="18" r="2"/><circle cx="19" cy="6" r="2"/>',
     "fib": '<path d="M4 4h16M4 10h12M4 15h16M4 20h10M4 4v16"/>',
+    "long_position": '<path d="M4 12h16M4 5h16M4 19h16M12 10V5m-3 3 3-3 3 3"/>',
+    "short_position": '<path d="M4 12h16M4 5h16M4 19h16M12 14v5m-3-3 3 3 3-3"/>',
     "window-minimize": '<path d="M5 12h14"/>',
     "window-maximize": '<rect x="5" y="5" width="14" height="14" rx=".5"/>',
     "window-restore": '<path d="M9 6V4h11v11h-2"/><rect x="4" y="9" width="11" height="11" rx=".5"/>',

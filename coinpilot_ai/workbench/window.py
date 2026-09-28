@@ -7,9 +7,7 @@ from PyQt6.QtWidgets import QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWi
 from coinpilot_ai.charts.panel import ChartPanel, SavedSplitter
 from coinpilot_ai.charts.multi import MultiChart
 from coinpilot_ai.research.scanner_panel import ScannerPanel
-from coinpilot_ai.research.replay_panel import ReplayPage
 from coinpilot_ai.market.panel import MicroPanel
-from coinpilot_ai.research.strategy_panel import StrategyPage
 from coinpilot_ai.core.store import encode
 from coinpilot_ai.review.page import ReviewPage
 from coinpilot_ai.ui.common import button, fill_table, selected_id, table, timestamp
@@ -84,11 +82,10 @@ class Workbench(QMainWindow):
         self.review = ReviewPage(service)
         self.review_tabs = QTabWidget()
         self.review_tabs.addTab(self.review, "交易复盘")
-        self.replay = ReplayPage(service)
-        self.review_tabs.addTab(self.replay, "Bar Replay · 训练")
-        self.strategy_page = StrategyPage(service)
-        self.review_tabs.addTab(self.strategy_page, "策略与回测")
-        self.review_tabs.currentChanged.connect(lambda index: self.replay.pause() if index != 1 else None)
+        self._replay = self._strategy_page = None
+        self.review_tabs.addTab(QWidget(), "Bar Replay · 训练")
+        self.review_tabs.addTab(QWidget(), "策略与回测")
+        self.review_tabs.currentChanged.connect(self.review_tab_changed)
         self.pages.addTab(self.review_tabs, icon("review"), "复盘")
         self.settings_page = SettingsPage(service, parent=self, owner=settings_owner, updater=updater, workspace=self.workspace)
         self.chart.preferences_requested.connect(lambda: self.open_settings("图表"))
@@ -103,6 +100,45 @@ class Workbench(QMainWindow):
         self.refresh("market")
         self.refresh("events")
         self.refresh_watchlist()
+
+    def _research_page(self, name, index):
+        page = getattr(self, name)
+        if page is None:
+            if name == "_replay":
+                from coinpilot_ai.research.replay_panel import ReplayPage
+                page = ReplayPage(self.service)
+            else:
+                from coinpilot_ai.research.strategy_panel import StrategyPage
+                page = StrategyPage(self.service)
+            setattr(self, name, page)
+            tabs = self.review_tabs
+            current, label, placeholder = tabs.currentIndex(), tabs.tabText(index), tabs.widget(index)
+            blocked = tabs.blockSignals(True)
+            try:
+                tabs.removeTab(index)
+                tabs.insertTab(index, page, label)
+                tabs.setCurrentIndex(current)
+            finally:
+                tabs.blockSignals(blocked)
+            placeholder.deleteLater()
+        return page
+
+    @property
+    def replay(self):
+        return self._research_page("_replay", 1)
+
+    @property
+    def strategy_page(self):
+        return self._research_page("_strategy_page", 2)
+
+    def review_tab_changed(self, index):
+        if self._replay is not None and index != 1:
+            self._replay.pause()
+        if self.pages.currentIndex() == 1:
+            if index == 1:
+                self.replay
+            elif index == 2:
+                self.strategy_page
 
     def make_market(self):
         page = QWidget()
@@ -271,12 +307,13 @@ class Workbench(QMainWindow):
         if self.service.closed or not hasattr(self, "settings_page"):
             return
         self.workspace.activate(index == 0 and self.isVisible())
-        if index != 1:
-            self.replay.pause()
+        if index != 1 and self._replay is not None:
+            self._replay.pause()
         if index == 0:
             self.events_seen.emit()
             self.sync_visible(True)
         elif index == 1:
+            self.review_tab_changed(self.review_tabs.currentIndex())
             self.review.ai_panel.reload_templates()
             self.review.refresh()
         elif index == 2:
@@ -359,8 +396,10 @@ class Workbench(QMainWindow):
 
     def closeEvent(self, event):
         if self.exiting:
-            self.replay.shutdown()
-            self.strategy_page.shutdown()
+            if self._replay is not None:
+                self._replay.shutdown()
+            if self._strategy_page is not None:
+                self._strategy_page.shutdown()
             self.workspace.shutdown()
             event.accept()
             return

@@ -1,13 +1,12 @@
 """桌面悬浮窗、轮播与用户交互。"""
 
-from PyQt6.QtCore import QEvent, QEasingCurve, QRectF, Qt, QTimer, QVariantAnimation, pyqtSignal
-from PyQt6.QtGui import QActionGroup, QColor, QPainter, QPainterPath, QPixmap
+from PyQt6.QtCore import QEvent, QEasingCurve, QRect, QRectF, Qt, QTimer, QVariantAnimation, pyqtSignal
+from PyQt6.QtGui import QActionGroup, QColor, QImage, QPainter, QPainterPath, QPixmap
 from PyQt6.QtWidgets import QApplication, QMenu, QWidget
 
 from coinpilot_ai.market.client import MarketClient
 from coinpilot_ai.core.config import SOURCE_LABELS
 from coinpilot_ai.market.providers import SOURCE_NAMES
-from .settings import SettingsDialog
 from coinpilot_ai.ui.icons import icon
 from coinpilot_ai.ui.theme import activate_theme, color, events, menu_style
 from coinpilot_ai.desktop.visuals import Quote, draw_ticker, ticker_size
@@ -40,6 +39,10 @@ class CoinPilotWidget(QWidget):
         self.hold_timer.setInterval(350)
         self.hold_timer.timeout.connect(self._begin_drag)
         self._closed = False
+        self._price_background = None
+        self.contrast_timer = QTimer(self)
+        self.contrast_timer.setInterval(250)
+        self.contrast_timer.timeout.connect(self._refresh_price_contrast)
         self.unread_events = 0
         self._minimum_content_width = 0
         self.settings_dialog = None
@@ -246,6 +249,50 @@ class CoinPilotWidget(QWidget):
             self._resize_to_content()
             self.update()
 
+    def _capture_price_background(self):
+        # 顶部空白带没有文字，读取的是已经与透明面板合成的实际背景。
+        # 避免采到数字自身，否则深浅色会在每次刷新时反复切换。
+        band = QRect(self.x(), self.y() + max(2, round(4 * self.height() / self.logical_height)),
+                     self.width(), 1)
+        image = QImage(self.width(), 1, QImage.Format.Format_RGB32)
+        image.fill(QColor(color("mini_background")))
+        captured = False
+        painter = QPainter(image)
+        for screen in QApplication.screens():
+            part = band.intersected(screen.geometry())
+            if part.isEmpty():
+                continue
+            local = part.translated(-screen.geometry().topLeft())
+            pixmap = screen.grabWindow(0, local.x(), local.y(), local.width(), 1)
+            if pixmap.isNull():
+                continue
+            # grabWindow 返回物理像素；先还原为逻辑宽度，兼容跨屏及不同 DPI。
+            strip = pixmap.toImage().scaled(part.width(), 1)
+            strip.setDevicePixelRatio(1)
+            painter.drawImage(part.x() - band.x(), 0, strip)
+            captured = True
+        painter.end()
+        return image.scaled(self.logical_width, 1) if captured else None
+
+    def _refresh_price_contrast(self):
+        if self._closed or not self.isVisible() or self.progress < 1:
+            return
+        background = self._capture_price_background()
+        if background != self._price_background:
+            self._price_background = background
+            self.update()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._closed:
+            self._price_background = None
+            self.contrast_timer.start()
+
+    def hideEvent(self, event):
+        self.contrast_timer.stop()
+        self._price_background = None
+        super().hideEvent(event)
+
     def paintEvent(self, event):
         painter = QPainter(self)
         render_hints(painter)
@@ -262,7 +309,8 @@ class CoinPilotWidget(QWidget):
             painter.save()
             painter.translate(offset, 0)
             draw_ticker(painter, rect, self.quotes[self.symbols[index]], self.decimals[index],
-                        self.config["text_size"], self.config["bg_opacity"], mini=self.config.get("mini_mode", True))
+                        self.config["text_size"], self.config["bg_opacity"], mini=self.config.get("mini_mode", True),
+                        price_background=self._price_background, background_offset=offset)
             painter.restore()
         if self.unread_events:
             painter.setPen(Qt.PenStyle.NoPen)
@@ -376,6 +424,7 @@ class CoinPilotWidget(QWidget):
             self.settings_dialog.raise_()
             self.settings_dialog.activateWindow()
             return
+        from .settings import SettingsDialog
         self.settings_dialog = SettingsDialog(self)
         self.settings_dialog.finished.connect(self._settings_finished)
         self.settings_dialog.show()
@@ -393,6 +442,7 @@ class CoinPilotWidget(QWidget):
         self._cancel_pointer()
         self.update_timer.stop()
         self.cycle_timer.stop()
+        self.contrast_timer.stop()
         self.animation.stop()
         if self.hotkey is not None:
             self.hotkey.close()

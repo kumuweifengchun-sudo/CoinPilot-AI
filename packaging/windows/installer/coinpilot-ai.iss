@@ -59,6 +59,24 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 Source: "{#BuildDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [InstallDelete]
+; 升级时清理旧版本捆绑的闲置资源，否则精简后的包覆盖安装仍保留旧体积。
+; 仅作用于安装器管理的内部资源，不触碰配置、数据库或用户图标缓存。
+Type: files; Name: "{app}\_internal\PyQt6\Qt6\bin\opengl32sw.dll"
+Type: files; Name: "{app}\_internal\PyQt6\Qt6\bin\Qt6Pdf.dll"
+Type: files; Name: "{app}\_internal\PyQt6\Qt6\plugins\imageformats\qpdf.dll"
+Type: files; Name: "{app}\_internal\PyQt6\Qt6\plugins\imageformats\qicns.dll"
+Type: files; Name: "{app}\_internal\PyQt6\Qt6\plugins\imageformats\qtga.dll"
+Type: files; Name: "{app}\_internal\PyQt6\Qt6\plugins\imageformats\qtiff.dll"
+Type: files; Name: "{app}\_internal\PyQt6\Qt6\plugins\imageformats\qwbmp.dll"
+Type: files; Name: "{app}\_internal\PyQt6\Qt6\plugins\generic\qtuiotouchplugin.dll"
+Type: files; Name: "{app}\_internal\PyQt6\Qt6\plugins\tls\qopensslbackend.dll"
+Type: files; Name: "{app}\_internal\PyQt6\Qt6\translations\*.qm"
+Type: files; Name: "{app}\_internal\coinpilot_ai\assets\app_icon\project.png"
+Type: files; Name: "{app}\_internal\coinpilot_ai\assets\app_icon\16.ico"
+Type: files; Name: "{app}\_internal\coinpilot_ai\assets\app_icon\32.ico"
+Type: files; Name: "{app}\_internal\coinpilot_ai\assets\app_icon\64.ico"
+Type: files; Name: "{app}\_internal\coinpilot_ai\assets\app_icon\128.ico"
+Type: files; Name: "{app}\_internal\coinpilot_ai\assets\app_icon\256.ico"
 ; 更名升级只清理旧入口与旧品牌快捷方式，用户数据仍保留。
 Type: files; Name: "{app}\crypto-widget.exe"
 Type: files; Name: "{userdesktop}\Crypto Widget.lnk"

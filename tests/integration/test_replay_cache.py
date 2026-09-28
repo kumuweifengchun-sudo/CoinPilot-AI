@@ -30,6 +30,16 @@ def test_cache_deduplicates_and_reports_gaps(tmp_path):
     cache.close()
 
 
+def test_gap_detection_uses_timestamps_without_loading_candle_bodies(tmp_path, monkeypatch):
+    cache = MarketCache(tmp_path / "market.db")
+    try:
+        cache.put(INST, "15m", [bars()[0], bars()[2]])
+        monkeypatch.setattr(cache, "range", lambda *_: (_ for _ in ()).throw(AssertionError("不应解析 K 线")))
+        assert cache.gaps(INST, "15m", 900000, 2700000) == [1800000]
+    finally:
+        cache.close()
+
+
 def test_replay_order_waits_for_next_bar_and_resumes(tmp_path):
     store = Store(tmp_path / "business.db")
     session = ReplaySession(store, {INST: SPEC}, INST, "15m", bars())

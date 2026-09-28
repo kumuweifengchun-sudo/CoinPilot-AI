@@ -15,6 +15,7 @@ from .derivative_strip import DerivativeStrip
 from .instrument_selector import InstrumentSelector
 from coinpilot_ai.market.intervals import BARS
 from coinpilot_ai.charts.state import TOOLS, trade_lines, normalize_indicators
+from coinpilot_ai.charts.position import POSITION_TOOLS, position_metrics, position_summary
 from coinpilot_ai.trading.models import instrument_id
 from coinpilot_ai.ui.icons import icon, set_button_icon
 from coinpilot_ai.ui.theme import chart_controls_style, events
@@ -188,6 +189,7 @@ class ChartPanel(QWidget):
                                                  self.local_indicators_changed)
             self.canvas.indicators_override = self.indicator_book.indicators
         self.canvas.magnet_changed.connect(self.sync_magnet)
+        self.canvas.selection_changed.connect(self.update_status)
         # 左侧工具栏在紧凑窗口里可滚动；顶部绘图菜单始终提供相同开关。
         tools_menu.addSeparator()
         self.magnet_action = tools_menu.addAction("K 线高低点磁吸")
@@ -233,6 +235,8 @@ class ChartPanel(QWidget):
         bottom.setSpacing(3)
         self.status = QLabel()
         self.status.setObjectName("muted")
+        self.status.setMinimumWidth(0)
+        self.status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         bottom.addWidget(self.status, 1)
         self.retry_button = self.small_button("历史 / 重试", self.retry_history)
         bottom.addWidget(self.retry_button)
@@ -310,6 +314,7 @@ class ChartPanel(QWidget):
         self.context_changed.emit(*pair)
 
     def set_compact(self, compact):
+        self.compact = compact
         self.compact_bar.setVisible(compact)
         self.compact_bar.setCurrentIndex(max(0, self.compact_bar.findData(self.bar)))
         for button in self.period_buttons.values():
@@ -318,6 +323,7 @@ class ChartPanel(QWidget):
             widget.setVisible(not compact)
         self.bottom_button.setVisible(not compact)
         self.sidebar_button.setVisible(not compact)
+        self.update_status()
 
     def choose_tool(self, tool):
         self.tool_buttons[tool].setChecked(True)
@@ -491,13 +497,27 @@ class ChartPanel(QWidget):
             stale = time.time()-s.account.get("time", 0) > 20 or bool(s.account_error)
             repaint |= overlays != self.canvas.overlays or stale != self.canvas.account_stale
             self.canvas.overlays, self.canvas.account_stale = overlays, stale
-        status = "OKX · " + s.chart_feed.text(self.pair)
-        if self.status.text() != status:
-            self.status.setText(status)
-            self.status.setToolTip(status+"\n空白拖动平移 · 滚轮缩放 · 拖动右侧价格轴拉伸 · 点击 EMA 图例编辑")
+        self.update_status()
         self.auto_button.setChecked(self.canvas.auto_scale)
         if repaint:
             self.canvas.update()
+
+    def update_status(self):
+        status = "OKX · " + self.service.chart_feed.text(self.pair)
+        full = status
+        selected = self.canvas.selected()
+        if selected and selected['tool'] in POSITION_TOOLS and not selected.get('hidden'):
+            try:
+                result = position_metrics(selected)
+                full += ' | ' + position_summary(selected)
+                brief = (f"{POSITION_TOOLS[selected['tool']]} · 盈 +{result['profit_usdt']:,.2f} U"
+                         f" / 亏 -{result['loss_usdt']:,.2f} U")
+                status = brief if getattr(self, 'compact', False) else status + ' | ' + brief
+            except ValueError:
+                pass
+        if self.status.text() != status:
+            self.status.setText(status)
+        self.status.setToolTip(full+"\n空白拖动平移 · 滚轮缩放 · 拖动右侧价格轴拉伸 · 点击 EMA 图例编辑")
 
     def showEvent(self, event):
         super().showEvent(event)

@@ -33,7 +33,10 @@ version_info = VSVersionInfo(
 )
 datas = [
     (str(root / "pyproject.toml"), "."),
-    (str(root / "coinpilot_ai" / "assets"), "coinpilot_ai/assets"),
+    (str(root / "coinpilot_ai/assets/app_icon/app.ico"), "coinpilot_ai/assets/app_icon"),
+    (str(root / "coinpilot_ai/assets/fonts"), "coinpilot_ai/assets/fonts"),
+    (str(root / "coinpilot_ai/assets/lucide"), "coinpilot_ai/assets/lucide"),
+    (str(root / "coinpilot_ai/assets/update-install.ps1"), "coinpilot_ai/assets"),
     (str(root / "LICENSE"), "licenses/CoinPilotAI"),
     (str(Path(sys.base_prefix) / "LICENSE.txt"), "licenses/Python"),
 ]
@@ -63,6 +66,17 @@ a = Analysis(
 a.binaries = [entry for entry in a.binaries
               if Path(entry[0]).name.lower() != "ucrtbase.dll"
               and not Path(entry[0]).name.lower().startswith("api-ms-win-")]
+# 当前界面全部使用 QWidget/QPainter 栅格绘图，没有 OpenGL 控件或 PDF 阅读功能。
+# qpdf 图片插件会间接引入整个 QtPdf；不随产品分发这些未使用的后端。
+unused_qt = {"opengl32sw.dll", "qt6pdf.dll", "qpdf.dll", "qicns.dll", "qtga.dll",
+             "qtiff.dll", "qwbmp.dll", "qtuiotouchplugin.dll", "qopensslbackend.dll"}
+a.binaries = [entry for entry in a.binaries
+              if not (entry[0].replace("\\", "/").lower().startswith("pyqt6/")
+                      and Path(entry[0]).name.lower() in unused_qt)]
+# 产品仅提供中文界面，保留 Qt 中文翻译及所有运行时许可。
+a.datas = [entry for entry in a.datas
+           if "/translations/" not in entry[0].replace("\\", "/")
+           or Path(entry[0]).stem.endswith("_zh_CN")]
 pyz = PYZ(a.pure)
 exe = EXE(
     pyz, a.scripts, [], exclude_binaries=True, contents_directory="_internal",

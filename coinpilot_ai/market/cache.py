@@ -30,17 +30,21 @@ class MarketCache:
         with self.db:
             self.db.executemany("INSERT INTO candles VALUES(?,?,?,?,?,?) ON CONFLICT(instrument,bar,stamp) "
                                 "DO UPDATE SET body=excluded.body,source=excluded.source,fetched=excluded.fetched",
-                                [(instrument, bar, int(row[0]), json.dumps(row), source, now) for row in clean])
+                                ((instrument, bar, int(row[0]), json.dumps(row, separators=(",", ":")), source, now)
+                                 for row in clean))
         return len(clean)
 
     def range(self, instrument, bar, begin, end):
         rows = self.db.execute("SELECT body FROM candles WHERE instrument=? AND bar=? AND stamp BETWEEN ? AND ? "
-                               "ORDER BY stamp", (instrument, bar, int(begin), int(end))).fetchall()
+                               "ORDER BY stamp", (instrument, bar, int(begin), int(end)))
         return [json.loads(body) for (body,) in rows]
 
     def gaps(self, instrument, bar, begin, end):
         step = BARS[bar]*1000
-        stamps = {int(row[0]) for row in self.range(instrument, bar, begin, end)}
+        # 只查询主键索引，避免分页补齐时反复读取、解析全部历史 JSON。
+        stamps = {stamp for (stamp,) in self.db.execute(
+            "SELECT stamp FROM candles WHERE instrument=? AND bar=? AND stamp BETWEEN ? AND ?",
+            (instrument, bar, int(begin), int(end)))}
         first = ((int(begin)+step-1)//step)*step
         return [stamp for stamp in range(first, int(end)+1, step) if stamp not in stamps]
 

@@ -7,7 +7,6 @@ from PyQt6.QtWidgets import QApplication, QHBoxLayout, QLabel, QMenu, QPushButto
 from coinpilot_ai.ui.icons import tray_icon, icon
 from coinpilot_ai.ui.theme import color, events, menu_style, style_sheet
 from coinpilot_ai.application.service import CockpitService
-from coinpilot_ai.workbench.window import Workbench
 
 
 class NotificationToast(QWidget):
@@ -105,9 +104,14 @@ class DesktopController(QObject):
         self.click_timer.setSingleShot(True)
         self.click_timer.timeout.connect(self.show_mini)
         try:
-            self.service = CockpitService(widget.config, config_path.with_suffix(".workbench.sqlite3"), cache_dir, parent=app)
+            self.service = CockpitService(widget.config, config_path.with_suffix(".workbench.sqlite3"),
+                                          cache_dir, parent=app, autostart=False)
             self.service.event_created.connect(self.notify)
             self.service.updated.connect(self.updated)
+            # 纯迷你行情不需要第二套行情订阅、K 线、衍生品和合约目录。
+            # 已配置账户（包含本地模拟）或启用提醒时仍立即恢复后台监控。
+            if self.service.needs_background_monitoring:
+                self.service.start()
             self.updated("settings")
         except (OSError, ValueError, sqlite3.Error) as exc:
             self.warning = "工作台启动失败，迷你窗口与托盘仍可使用：" + str(exc)
@@ -132,8 +136,10 @@ class DesktopController(QObject):
             self.show_mini()
             return
         if self.window is None:
+            from coinpilot_ai.workbench.window import Workbench
             self.window = Workbench(self.service, settings_owner=self.widget, updater=self.updater)
             self.window.events_seen.connect(self.clear_badge)
+        self.service.start()
         if self.window.isMinimized():
             self.window.showNormal()
         else:

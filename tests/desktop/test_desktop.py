@@ -97,11 +97,14 @@ def test_tray_restore_pause_badge_and_service_fallback(app, tmp_path, monkeypatc
         def read(self, key):
             return None
     service = CockpitService(dict(DEFAULT_CONFIG), tmp_path / "test.db", tmp_path / "icons", vault=EmptyVault(), autostart=False)
+    starts = []
+    monkeypatch.setattr(service, "start", lambda: starts.append(True))
     monkeypatch.setattr(desktop, "CockpitService", lambda *args, **kwargs: service)
     widget = CoinPilotWidget(dict(DEFAULT_CONFIG), SettingsStore(tmp_path / "settings.json"), start_requests=False)
     controller = desktop.DesktopController(app, widget, widget.store.path, tmp_path / "icons")
     try:
         assert controller.workbench_action.text() == "交易台"
+        assert starts == []
         assert all(len(action.text()) <= 4 for action in controller.menu.actions() if not action.isSeparator())
         widget.hide()
         controller.activated(QSystemTrayIcon.ActivationReason.Trigger)
@@ -116,6 +119,7 @@ def test_tray_restore_pause_badge_and_service_fallback(app, tmp_path, monkeypatc
         assert "1 条未读提醒" in controller.tray.toolTip()
         assert not controller.toast.isVisible()
         controller.activated(QSystemTrayIcon.ActivationReason.DoubleClick)
+        assert starts == [True]
         assert controller.window.isVisible()
         controller.window.showMinimized()
         controller.open_workbench()
