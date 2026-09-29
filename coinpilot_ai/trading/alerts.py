@@ -4,14 +4,20 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 
 from .models import instrument_id, number
-from coinpilot_ai.market.intervals import BARS as BAR_SECONDS
-from coinpilot_ai.market.indicators import calculate, validate_spec
+from coinpilot_ai.market.intervals import BARS as BAR_SECONDS, contiguous, shift
+from coinpilot_ai.market.indicators import IndicatorRegistry, validate_spec
 
 METRICS = {"price": "最新价格", "change_pct": "区间涨跌幅 (%)", "volume_ratio": "成交量倍数",
            "upl": "持仓未实现盈亏 (USDT)", "upl_pct": "持仓收益率 (%)",
            "funding": "资金费率", "oi": "持仓量", "oi_change_pct": "持仓量变化 (%)",
            "mark": "标记价格", "index": "指数价格", "basis": "基差 (%)"}
-BARS = ("1m", "5m", "15m", "1H", "4H", "1D")
+BARS = tuple(BAR_SECONDS)
+
+
+def recent_close(stamp, bar, now):
+    closed = shift(int(stamp), bar)
+    next_close = shift(closed, bar)
+    return -5 <= now-closed/1000 <= (next_close-closed)/1000+30
 
 
 def validate_rule(rule):
@@ -72,12 +78,17 @@ class RuleState:
 
 
 class AlertEngine:
-    def __init__(self):
+    def __init__(self, indicator_provider=None):
+        self.indicator_registry = IndicatorRegistry()
+        self.indicator_provider = indicator_provider or self.indicator_registry.get
         self.states = {}
         self.history = {}
         self.last_tick = {}
 
     def invalidate(self, instrument=None):
+        for key in list(self.indicator_registry.items):
+            if instrument is None or key[0][0] == instrument:
+                self.indicator_registry.items.pop(key)
         for state in self.states.values():
             state.active = None
         if instrument is None:
@@ -109,28 +120,31 @@ class AlertEngine:
         if metric == "indicator":
             bar = condition.get("bar", "15m")
             rows = candles.get((instrument, bar), [])
-            complete = [row for row in rows if len(row) > 8 and str(row[8]) == "1"]
-            if len(complete) < 2:
+            result = self.indicator_provider((instrument, bar), rows, condition["indicator"])
+            from itertools import islice
+            indexes = list(islice((i for i in range(len(result.times)-1, -1, -1) if result.confirmed[i]), 2))
+            if len(indexes) < 2:
                 return None
-            step = BAR_SECONDS[bar]*1000
-            start = len(complete)-1
-            while start > 0 and int(complete[start][0])-int(complete[start-1][0]) == step:
-                start -= 1
-            contiguous = complete[start:]
-            result = calculate(contiguous, condition["indicator"])
+            current, previous = indexes
+            latest = next((int(row[0]) for row in reversed(rows) if int(row[8]) == 1), None)
+            if result.times[current] != latest or not contiguous(result.times[previous], result.times[current], bar):
+                return None
             line = condition.get("line") or next(iter(result.lines))
             values = result.lines.get(line)
-            if values is None or len(values) < 2 or values[-1] is None or values[-2] is None:
+            if values is None or values[current] is None or values[previous] is None:
                 return None
             if "compare" in condition:
-                other = calculate(contiguous, condition["compare"]["indicator"])
+                other = self.indicator_provider((instrument, bar), rows, condition["compare"]["indicator"])
+                if not other.lines:
+                    return None
                 compare_line = condition["compare"].get("line") or next(iter(other.lines))
                 rhs = other.lines.get(compare_line)
-                if rhs is None or rhs[-1] is None or rhs[-2] is None:
+                if (rhs is None or len(rhs) <= current or other.times[current] != result.times[current]
+                        or rhs[current] is None or rhs[previous] is None):
                     return None
-                return (values[-2], values[-1], rhs[-2], rhs[-1], str(result.times[-1]))
+                return (values[previous], values[current], rhs[previous], rhs[current], str(result.times[current]))
             threshold = float(number(condition["threshold"]))
-            return (values[-2], values[-1], threshold, threshold, str(result.times[-1]))
+            return (values[previous], values[current], threshold, threshold, str(result.times[current]))
         if metric == "price":
             return number(quote["price"])
         if metric == "change_pct":
@@ -142,12 +156,11 @@ class AlertEngine:
             return (number(quote["price"]) / base[1] - 1) * 100
         if metric == "volume_ratio":
             rows = candles.get((instrument, condition.get("bar", "15m")), [])
-            complete = [row for row in rows if len(row) > 8 and row[8] == "1"]
+            complete = [row for row in rows[-22:] if len(row) > 8 and int(row[8]) == 1]
             if len(complete) < 21:
                 return None
-            step = BAR_SECONDS[condition.get("bar", "15m")] * 1000
             tail = complete[-21:]
-            if any(int(b[0])-int(a[0]) != step for a, b in zip(tail, tail[1:])):
+            if any(not contiguous(a[0], b[0], condition.get("bar", "15m")) for a, b in zip(tail, tail[1:])):
                 return None
             baseline = sum(number(row[5]) for row in complete[-21:-1]) / 20
             return number(complete[-1][5]) / baseline if baseline > 0 else None
@@ -174,7 +187,7 @@ class AlertEngine:
                 bar = condition.get("bar", "15m")
                 rows = candles.get((rule["instrument"], bar), [])
                 closed = next((row for row in reversed(rows) if len(row) > 8 and str(row[8]) == "1"), None)
-                if closed is None or not -5 <= now-(int(closed[0])/1000+BAR_SECONDS[bar]) <= BAR_SECONDS[bar]+30:
+                if closed is None or not recent_close(closed[0], bar, now):
                     state.active = None
                     return None
             value = self.metric(condition, rule["instrument"], quote, positions, candles, now, account_fresh, derivatives)
@@ -202,7 +215,7 @@ class AlertEngine:
             if not complete:
                 state.active = None
                 return None
-            if not -5 <= now-(int(complete[-1][0])/1000+BAR_SECONDS[rule.get("trigger_bar", "1m")]) <= BAR_SECONDS[rule.get("trigger_bar", "1m")]+30:
+            if not recent_close(complete[-1][0], rule.get("trigger_bar", "1m"), now):
                 state.active = None
                 return None
             marker = str(complete[-1][0])

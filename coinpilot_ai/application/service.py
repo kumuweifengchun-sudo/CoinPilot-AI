@@ -4,6 +4,7 @@ import math
 import sqlite3
 import time
 import uuid
+from threading import Lock
 from copy import deepcopy
 from dataclasses import asdict
 from pathlib import Path
@@ -11,6 +12,8 @@ from pathlib import Path
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 from coinpilot_ai.market.client import MarketClient
+from coinpilot_ai.market.cache import MarketCache
+from coinpilot_ai.market.jobs import WorkQueue
 from coinpilot_ai.review.ai import AiClient, PromptLibrary, render_prompt
 from coinpilot_ai.trading.alerts import AlertEngine, RuleState, validate_rule
 from coinpilot_ai.market.derivatives import DerivativeMonitor
@@ -24,6 +27,7 @@ from coinpilot_ai.core.store import Store, encode
 from coinpilot_ai.trading.service import TradingService
 from coinpilot_ai.integrations.transport import ApiError, JsonTransport
 from coinpilot_ai.charts.state import ChartBook
+from coinpilot_ai.market.intervals import BARS
 from coinpilot_ai.market.candles import ChartFeed
 
 DEMO_CHECKS = {"open": "开仓成交", "close": "平仓成交", "cancel": "撤单完成",
@@ -36,10 +40,22 @@ class CockpitService(QObject):
     message = pyqtSignal(str)
     ai_finished = pyqtSignal(str, object)
 
+    @property
+    def market_cache(self):
+        with self._market_cache_lock:
+            if self._market_cache is None:
+                self._market_cache = MarketCache(self.store.path.with_suffix(".candles-v2.sqlite3"))
+        return self._market_cache
+
     def __init__(self, config, data_path, cache_dir, parent=None, *, vault=None, autostart=True):
         super().__init__(parent)
         self.config = dict(config)
         self.store = Store(data_path)
+        # 主图、回放和回测共用持久 K 线缓存；主图内存只保留工作窗口。
+        self._market_cache = None
+        self._market_cache_lock = Lock()
+        self.io = WorkQueue(self)
+        self.compute = WorkQueue(self, workers=2)
         self.chart_book = ChartBook(self.store, self)
         self.running = False
         # 凭据标识保持兼容；品牌更名不应要求用户重新录入现有密钥。
@@ -92,6 +108,7 @@ class CockpitService(QObject):
         self.market.set_proxy(config)
         self.market.price_ready.connect(self._price)
         self.chart_feed = ChartFeed(self)
+        self.engine.indicator_provider = self.chart_feed.rule_indicator
         self.derivatives = DerivativeMonitor(self)
         self.derivatives.changed.connect(self._evaluate)
         self._configure_account()
@@ -268,7 +285,7 @@ class CockpitService(QObject):
     def select(self, inst, bar=None):
         self.selected = instrument_id(inst)
         if bar:
-            if bar not in ("1m", "5m", "15m", "1H", "4H", "1D"):
+            if bar not in BARS:
                 raise ValueError("无效的图表周期")
             self.bar = bar
         if self.running:
@@ -621,7 +638,7 @@ class CockpitService(QObject):
         fields = ("instId", "posSide", "pos", "availPos", "avgPx", "upl", "uplRatio", "lever", "mgnMode", "liqPx")
         return {"captured_at": time.time(), "environment": self.environment, "instrument": inst,
                 "market": deepcopy(self.quotes.get(inst, {})), "bar": self.bar,
-                "candles": deepcopy(self.candles.get((inst, self.bar), [])[-80:]),
+                "candles": [list(row) for row in self.candles.get((inst, self.bar), [])[-80:]],
                 "positions": [{key: p.get(key, "") for key in fields} for p in self.positions if p.get("instId") == inst],
                 "account_fresh": time.time() - self.account.get("time", 0) <= 20}
 
@@ -726,6 +743,10 @@ class CockpitService(QObject):
         self.trading.close()
         self.market.close()
         self.chart_feed.close()
+        self.io.close()
+        self.compute.close()
+        if self._market_cache is not None:
+            self._market_cache.close()
         self.derivatives.reset()
         self.transport.close()
         self.ai_transport.close()

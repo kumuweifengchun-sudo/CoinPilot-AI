@@ -53,17 +53,20 @@ def test_single_chart_placeholder_and_default_geometry(workspace, app):
 def test_research_pages_are_lazy_and_preserve_drafts(workspace, app):
     window, service = workspace
     assert window._replay is None and window._strategy_page is None
-    market_path = service.store.path.with_suffix(".market.sqlite3")
+    market_path = service.store.path.with_suffix(".candles-v2.sqlite3")
     assert not market_path.exists()
     window.pages.setCurrentIndex(1)
     assert window._replay is None and window._strategy_page is None
     window.review_tabs.setCurrentIndex(1)
     app.processEvents()
     replay = window.replay
-    assert market_path.exists() and replay.isVisible()
+    assert not market_path.exists() and replay.isVisible()  # 建页不在 UI 线程打开行情数据库。
     replay.symbol.setText("ETH-USDT-SWAP")
     window.review_tabs.setCurrentIndex(2)
     assert window._strategy_page is not None
+    assert replay.cache is window.strategy_page.cache is service.market_cache
+    replay.shutdown()
+    assert service.market_cache.db.execute("SELECT 1").fetchone() == (1,)
     window.close()
     window.show()
     window.review_tabs.setCurrentIndex(1)

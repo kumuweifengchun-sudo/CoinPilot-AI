@@ -9,7 +9,7 @@ from PyQt6.QtCore import QDateTime, QObject, QPoint, QPointF, Qt, pyqtSignal
 from PyQt6.QtNetwork import QNetworkProxy
 from PyQt6.QtTest import QTest
 from PyQt6.QtGui import QMouseEvent, QWheelEvent
-from PyQt6.QtWidgets import QMenu
+from PyQt6.QtWidgets import QMenu, QApplication
 
 from coinpilot_ai.core.config import DEFAULT_CONFIG
 from coinpilot_ai.charts.canvas import CandleChart
@@ -20,6 +20,7 @@ from coinpilot_ai.charts.state import OBJECT_NAMES, ChartBook, drawing, ema_valu
 from coinpilot_ai.charts.position import position_metrics
 from coinpilot_ai.charts.pattern import projected_prices
 from coinpilot_ai.market.series import ChartSeries
+from coinpilot_ai.market.buffer import CandleBuffer
 from coinpilot_ai.application.service import CockpitService
 from coinpilot_ai.core.store import Store
 from coinpilot_ai.integrations.transport import ApiError
@@ -35,11 +36,22 @@ def candles(count=300, begin=1700000000000, interval=900000):
     return [[str(begin+i*interval), str(100+i*.01), str(102+i*.01), str(98+i*.01), str(101+i*.01), str(10+i%17), "0", "0", "1"] for i in range(count)]
 
 
+def finish_jobs(service):
+    deadline = time.monotonic()+15
+    while service.io.futures or service.compute.futures:
+        QApplication.processEvents()
+        QTest.qWait(1)
+        assert time.monotonic() < deadline, "后台任务没有完成"
+
+
 def test_shared_indicator_result_is_reused_for_same_pair_and_revision(service):
     pair = ("BTC-USDT-SWAP", "15m")
     service.candles[pair] = candles(30)
     series = service.chart_feed.get_series(pair)
     spec = {"kind": "RSI", "params": {"period": 14}}
+    finish_jobs(service)
+    service.chart_feed.indicator(series, spec)
+    finish_jobs(service)
     first = service.chart_feed.indicator(series, spec)
     assert service.chart_feed.indicator(series, spec) is first
     service.chart_feed.merge(pair, candles(31))
@@ -77,6 +89,22 @@ def test_inactive_cache_is_bounded_without_evicting_monitoring_or_pending(servic
     assert len(feed.recent_pairs) == len(service.candles)
 
 
+def test_candle_memory_window_keeps_history_view_and_live_tail(service, monkeypatch):
+    feed = service.chart_feed
+    pair = ("BTC-USDT-SWAP", "15m")
+    feed.MEMORY_CANDLE_LIMIT = 20
+    feed.LIVE_TAIL_LIMIT = 8
+    monkeypatch.setattr(service.market_cache, "put", lambda *args, **kwargs: 0)
+    rows = candles(40)
+    feed.set_view("test", pair, int(rows[5][0]), 5)
+    feed.merge(pair, rows)
+    kept = service.candles[pair]
+    stamps = {int(row[0]) for row in kept}
+    assert len(kept) <= 20
+    assert int(rows[5][0]) in stamps
+    assert [int(row[0]) for row in kept[-8:]] == [int(row[0]) for row in rows[-8:]]
+
+
 def test_cross_period_indicator_waits_for_source_bar_close(service):
     inst = "BTC-USDT-SWAP"
     begin = 1700000000000
@@ -90,6 +118,10 @@ def test_cross_period_indicator_waits_for_source_bar_close(service):
     service.chart_book.save_indicators([{"id": "hourly", "kind": "MA", "params": {"period": 1},
         "bar": "1H", "color": "#abcdef", "width": 1.5, "visible": True}])
     canvas.set_data(candles(8, begin, 900000))
+    finish_jobs(service)
+    canvas.calculate_indicators()
+    finish_jobs(service)
+    canvas.calculate_indicators()
     values = canvas.indicator_results[0][1].lines["value"]
     assert values[:3] == (None, None, None)
     assert values[3:7] == (100.0, 100.0, 100.0, 100.0)
@@ -264,6 +296,7 @@ def test_date_jump_button_uses_selected_local_time_and_requests_target_range(ser
     try:
         service.running = True
         panel.date_jump_button.click()
+        finish_jobs(service)
         assert panel.canvas.left_time+panel.canvas.count*panel.canvas.interval/2 == target
         assert not panel.canvas.follow
         path, _, params = service.api.calls[-1]
@@ -833,7 +866,7 @@ def test_magnet_precision_survives_zoom_resize_and_history_prepend(chart):
         chart.zoom_time(factor, chart.x(target[0]))
         assert chart.drawing_anchor(chart.point(target)+QPointF(2, 4)) == target
     older = candles(300, begin=1700000000000-300*900000)
-    chart.set_data(older+chart.rows)
+    chart.set_data(older+list(chart.rows))
     assert chart.drawing_anchor(chart.point(target)+QPointF(2, 4)) == target
 
 
@@ -862,7 +895,7 @@ def test_magnet_preview_tracks_changed_wick_but_keeps_fixed_first_anchor(chart):
     chart.set_tool("fib")
     chart.draw_click(chart.point(first))
     move_pointer(chart, chart.point(target)+QPointF(2, 4))
-    rows = deepcopy(chart.rows)
+    rows = [list(row) for row in chart.rows]
     rows[-20][2] = str(target[1]+.01)
     chart.set_data(rows)
     expected = [target[0], float(rows[-20][2])]
@@ -912,12 +945,12 @@ def test_rest_and_stream_merge_without_downgrading_or_losing_history(service):
     service.chart_feed.receive(pair, [newer])
     service.api.calls[-1][1](rows[-100:], None)
     assert len(service.candles[pair]) == 300
-    assert service.candles[pair][-1][4] == "120"
+    assert service.candles[pair][-1][4] == 120
     final = deepcopy(newer)
     final[8] = "1"
     service.chart_feed.receive(pair, [final])
     service.chart_feed.receive(pair, [rows[-1]])
-    assert service.candles[pair][-1][4] == "120" and service.candles[pair][-1][8] == "1"
+    assert service.candles[pair][-1][4] == 120 and service.candles[pair][-1][8] == 1
 
 
 def test_history_pagination_retry_boundary_and_old_environment_callbacks(service):
@@ -925,17 +958,21 @@ def test_history_pagination_retry_boundary_and_old_environment_callbacks(service
     feed, pair = service.chart_feed, (service.selected, service.bar)
     service.candles[pair] = candles()
     feed.fetch(*pair, older=True)
+    finish_jobs(service)
     assert api.calls[-1][0].endswith("history-candles")
     assert api.calls[-1][2]["after"] == candles()[0][0]
     count = len(api.calls)
     feed.fetch(*pair, older=True)
+    finish_jobs(service)
     assert len(api.calls) == count
     api.calls[-1][1](None, ApiError("offline"))
     assert "重试" in feed.history_state[pair]
     feed.fetch(*pair, older=True)
+    finish_jobs(service)
     api.calls[-1][1](candles(300, begin=1700000000000-300*900000), None)
     assert len(service.candles[pair]) == 600
     feed.fetch(*pair, older=True)
+    finish_jobs(service)
     api.calls[-1][1]([], None)
     assert feed.history_state[pair] == "已到历史边界"
     feed.fetch(*pair)
@@ -971,6 +1008,7 @@ def test_old_view_requests_target_range_directly(service):
     service.candles[pair] = candles()
     left = 1700000000000-900000*50000
     service.chart_feed.ensure_range(pair, left, 100)
+    finish_jobs(service)
     assert int(api.calls[-1][2]["after"]) <= left+101*900000
     assert service.chart_feed.history_state[pair] == "加载指定时间范围 K 线…"
     api.calls[-1][1](candles(100, left), None)
@@ -1051,8 +1089,8 @@ def test_workbench_shared_chart_maximize_and_close_keeps_service(app, service):
     assert window.workspace.docks["ai"].isHidden() and window.workspace.docks["info"].isHidden()
     window.chart.maximize()
     assert not window.workspace.docks["ai"].isHidden() and not window.workspace.docks["info"].isHidden()
-    menus = window.chart.findChildren(QMenu)
-    menus[0].actions()[1].trigger()
+    menu = window.chart.findChild(QMenu, "chartDrawingTools")
+    menu.actions()[1].trigger()
     assert window.chart.canvas.tool == "trend"
     window.chart.canvas.draw_click(QPointF(240, 180))
     window.chart.canvas.draw_click(QPointF(400, 220))
@@ -1118,13 +1156,14 @@ def finish_series(app, series):
     deadline = time.monotonic()+5
     while series.job is not None and time.monotonic() < deadline:
         app.processEvents()
+        QTest.qWait(1)
     assert series.job is None
 
 
 def assert_series_matches_full(series, rows):
-    assert series.data.rows == rows
-    assert series.data.times == [int(r[0]) for r in rows]
-    assert series.data.values == [[float(v) for v in r[1:6]] for r in rows]
+    assert series.data.rows == CandleBuffer(rows)
+    assert list(series.data.times) == [int(r[0]) for r in rows]
+    assert list(series.data.values) == [tuple(float(v) for v in r[1:6]) for r in rows]
     for period, result in zip(series.data.periods, series.data.emas):
         assert result == pytest.approx(ema_values([float(r[4]) for r in rows], period), rel=1e-13)
 
@@ -1132,11 +1171,14 @@ def assert_series_matches_full(series, rows):
 @pytest.mark.parametrize("count", [5000, 50000])
 def test_shared_tail_updates_do_constant_work(service, app, count):
     feed, pair = service.chart_feed, (service.selected, service.bar)
+    # 独立验证长序列计算；真实窗口裁剪由下方专用用例覆盖。
+    feed.MEMORY_CANDLE_LIMIT = count+1000
     rows = candles(count)
     rows[-1][8] = "0"
     service.candles[pair] = rows
     series = feed.get_series(pair)
     finish_series(app, series)
+    rows = service.candles[pair]
     index = feed.raw_index(pair)
     changes = []
     feed.series_changed.connect(changes.append)
@@ -1170,7 +1212,6 @@ def test_history_job_publishes_complete_result_with_interleaved_ticks(service, a
     feed.series_changed.connect(changes.append)
     feed.merge(pair, candles(300, 1700000000000-300*900000))
     assert series.job is not None and series.data is previous
-    series._step()
     assert series.data is previous
     rows = service.candles[pair]
     changed = list(rows[20])
@@ -1215,7 +1256,7 @@ def test_feed_reset_cancels_pending_series_publication(service, app):
     feed.series_changed.connect(changes.append)
     assert series.job is not None
     feed.reset()
-    assert series.job is None and not series.timer.isActive()
+    assert series.job is None
     app.processEvents()
     assert changes == [] and feed.series == {} and feed.raw_indexes == {}
 
@@ -1299,7 +1340,7 @@ def test_hidden_panels_share_calculation_and_resume_latest_snapshot(service, app
         assert not panel.refresh_timer.isActive() and not panel.range_timer.isActive()
         assert panel.canvas.market_builds == baseline
         calls = []
-        feed.ensure_range = lambda *args: calls.append(args)
+        feed.ensure_range = lambda *args, **kwargs: calls.append(args)
         service.running = True
         panel.canvas.follow = False
         panel.ensure_view()
@@ -1354,6 +1395,7 @@ def test_coalesced_updates_preserve_earliest_affected_time(service, app):
     feed, pair = service.chart_feed, (service.selected, service.bar)
     service.candles[pair] = candles(300)
     series = feed.get_series(pair)
+    finish_jobs(service)
     window = Workbench(service, lambda: None)
     try:
         window.show()
@@ -1490,3 +1532,337 @@ def test_position_handles_reject_invalid_drag_and_respect_lock(chart):
     locked = deepcopy(chart.objects[0])
     drag(chart, (round(edge.x()), round(edge.y())), (round(edge.x()+70), round(edge.y())))
     assert chart.objects[0] == locked
+
+
+def test_disk_cache_rejects_stale_rest_and_unconfirmed_overwrites(service):
+    feed, pair = service.chart_feed, (service.selected, service.bar)
+    row = candles(1)[0]
+    started = time.monotonic()-1
+    feed.receive(pair, [row])
+    stale = row.copy()
+    stale[4] = "99"
+    stale[8] = "0"
+    feed.merge(pair, [stale], started=started)
+    finish_jobs(service)
+    assert float(service.market_cache.tail(*pair, 1)[0][4]) == float(row[4])
+    assert service.market_cache.tail(*pair, 1)[0][8] == 1
+    stale[8] = "1"
+    feed.merge(pair, [stale], started=started)
+    finish_jobs(service)
+    assert float(service.market_cache.tail(*pair, 1)[0][4]) == float(row[4])
+
+
+def test_multi_view_windows_keep_both_visible_ranges(service):
+    feed, pair = service.chart_feed, (service.selected, service.bar)
+    feed.MEMORY_CANDLE_LIMIT, feed.LIVE_TAIL_LIMIT = 80, 20
+    data = candles(200)
+    feed.set_view("first", pair, int(data[5][0]), 10)
+    feed.set_view("second", pair, int(data[80][0]), 10)
+    feed.merge(pair, data)
+    stamps = set(service.chart_feed.raw_index(pair)[1])
+    assert {int(row[0]) for row in data[5:16]+data[80:91]+data[-20:]} <= stamps
+    assert len(stamps) <= 80
+    feed.set_view("second")
+    assert "first" in feed.view_windows[pair]
+    assert "second" not in feed.view_windows[pair]
+
+
+def test_following_panel_and_hide_only_release_own_window(service, app):
+    feed, pair = service.chart_feed, (service.selected, service.bar)
+    first = ChartPanel(service, local_pair=pair, local_key="first")
+    second = ChartPanel(service, local_pair=pair, local_key="second")
+    feed.set_view(first.view_owner, pair, 1700000000000, 100)
+    feed.set_view(second.view_owner, pair, 1700010000000, 100)
+    second.canvas.follow = True
+    second.ensure_view()
+    assert first.view_owner in feed.view_windows[pair]
+    assert second.view_owner not in feed.view_windows[pair]
+    first.show()
+    app.processEvents()
+    feed.set_view(first.view_owner, pair, 1700000000000, 100)
+    first.hide()
+    assert pair not in feed.view_windows
+    first.deleteLater()
+    second.deleteLater()
+
+
+def test_window_rollover_preserves_recursive_state_and_bounds_memory(service, app):
+    from coinpilot_ai.market.indicators import calculate
+    feed, pair = service.chart_feed, (service.selected, service.bar)
+    feed.MEMORY_CANDLE_LIMIT, feed.LIVE_TAIL_LIMIT = 100, 30
+    all_rows = candles(100)
+    feed.merge(pair, all_rows)
+    series = feed.get_series(pair)
+    finish_jobs(service)
+    specs = [{"kind": kind} for kind in ("EMA", "RSI", "MACD", "ATR", "SUPERTREND", "VWAP")]
+    for spec in specs:
+        feed.indicator(series, spec)
+    finish_jobs(service)
+    before = series.converted_rows
+    for i in range(35):
+        row = candles(1, int(all_rows[-1][0])+900000)[0]
+        all_rows.append(row)
+        feed.merge(pair, [row])
+        assert series.job is None
+        assert len(series.data.rows) <= 100
+        offset = len(all_rows)-len(series.data.rows)
+        for spec in specs:
+            actual = feed.indicator(series, spec)
+            expected = calculate(all_rows, spec, bar=pair[1])
+            for name, values in expected.lines.items():
+                assert actual.lines[name] == pytest.approx(values[offset:])
+    assert series.converted_rows-before == 35
+    finish_jobs(service)
+    assert len(service.market_cache.range(*pair, int(all_rows[0][0]), int(all_rows[-1][0]))) == 135
+
+
+def test_older_fetch_and_range_restore_use_disk_without_network(service, monkeypatch):
+    feed, pair = service.chart_feed, (service.selected, service.bar)
+    data = candles(800)
+    service.market_cache.put(*pair, data)
+    feed.merge(pair, data[700:], persist=False)
+    monkeypatch.setattr(service.api, "get", lambda *a, **k: pytest.fail("完整本地缓存不应联网"))
+    feed.fetch(*pair, older=True)
+    finish_jobs(service)
+    assert int(service.candles[pair][0][0]) == int(data[400][0])
+    feed.ensure_range(pair, int(data[50][0]), 50)
+    finish_jobs(service)
+    assert int(data[50][0]) in feed.raw_index(pair)[2]
+
+
+def test_startup_old_cache_does_not_schedule_years_of_repair(service, monkeypatch):
+    feed, pair = service.chart_feed, (service.selected, service.bar)
+    service.market_cache.put(*pair, candles(300))
+    responses = []
+    monkeypatch.setattr(service.api, "get", lambda path, callback, params: responses.append(callback))
+    feed.fetch(*pair)
+    finish_jobs(service)
+    responses.pop()(candles(300, 1800000000000), None)
+    assert pair not in feed.repairs
+
+
+def test_indicator_coalesced_revisions_keep_incremental_state(service):
+    from coinpilot_ai.market.indicators import calculate
+    feed, pair = service.chart_feed, (service.selected, service.bar)
+    feed.MEMORY_CANDLE_LIMIT, feed.LIVE_TAIL_LIMIT = 100, 20
+    all_rows = candles(100)
+    feed.merge(pair, all_rows)
+    series = feed.get_series(pair)
+    spec = {"kind": "MACD"}
+    finish_jobs(service)
+    feed.indicator(series, spec)
+    finish_jobs(service)
+    state = next(iter(feed.indicator_cache[pair].values()))[1]
+    before = state.processed_rows
+    for _ in range(30):
+        row = candles(1, int(all_rows[-1][0])+900000)[0]
+        all_rows.append(row)
+        feed.merge(pair, [row])
+    actual = feed.indicator(series, spec)
+    assert next(iter(feed.indicator_cache[pair].values()))[1] is state
+    assert state.processed_rows-before == 30
+    offset = len(all_rows)-len(series.data.rows)
+    expected = calculate(all_rows, spec, bar=pair[1])
+    for name, values in expected.lines.items():
+        assert actual.lines[name] == pytest.approx(values[offset:])
+
+
+def test_late_range_response_does_not_replace_newer_stream_or_disk(service):
+    feed, pair = service.chart_feed, (service.selected, service.bar)
+    service.api = api = FakeApi()
+    data = candles(5)
+    feed.merge(pair, [data[0], *data[2:]])
+    feed.ensure_range(pair, int(data[0][0]), 5)
+    finish_jobs(service)
+    latest = data[-1].copy()
+    latest[4] = "102"
+    feed.receive(pair, [latest])
+    api.calls[-1][1](data, None)
+    assert service.candles[pair][-1][4] == 102
+    finish_jobs(service)
+    assert float(service.market_cache.tail(*pair, 1)[0][4]) == 102
+
+
+@pytest.mark.parametrize("direction", [-1, 1])
+def test_integer_pixel_scroll_matches_full_market_layer(chart, direction):
+    chart.follow = chart.auto_scale = False
+    chart.count = chart.plot_rects()[0].width()/8
+    chart.left_time = chart.times[150]
+    chart.repaint()
+    before = getattr(chart, "market_scrolls", 0)
+    chart.left_time += direction*chart.interval
+    chart.repaint()
+    incremental = chart._market_layer.toImage()
+    assert chart.market_scrolls == before+1
+    chart._market_key = None
+    chart.repaint()
+    rebuilt = chart._market_layer.toImage()
+    # 光栅结果完全相同，验证透明清理、裁剪边界及 EMA 连线。
+    assert incremental == rebuilt
+
+
+def test_lod_chart_time_mapping_matches_rendered_bar(chart, service):
+    pair = (service.selected, "1H")
+    service.chart_feed.merge(pair, candles(100, interval=3600000), persist=False)
+    series = service.chart_feed.get_series(pair)
+    finish_jobs(service)
+    chart.bind_series(series)
+    chart.count = 1000
+    chart.left_time = chart.times[10]
+    stamp = chart.times[20]
+    expected = chart.plot_rects()[0].left()+(stamp-chart.left_time+1800000)/(1000*chart.interval)*chart.plot_rects()[0].width()
+    assert chart.x(stamp) == pytest.approx(expected)
+    assert chart.anchor(chart.point([stamp, 100])) == pytest.approx([stamp, 100])
+    chart.zoom_time(100, 200)
+    assert chart.count > 2000
+
+
+
+def test_replay_page_reads_old_view_without_future_or_live_series(service, app, monkeypatch):
+    from coinpilot_ai.research.replay_panel import ReplayPage
+    from coinpilot_ai.market.history import HistoryData
+    data = CandleBuffer(candles(10000))
+    inst, bar = service.selected, service.bar
+    session_id = "window-test"
+    service.store.put("replay_session", session_id, {"cursor": 9000})
+    snapshot = HistoryData.create(data, 900000)
+    page = ReplayPage(service)
+    monkeypatch.setattr(service.chart_feed, "get_series", lambda *_: pytest.fail("回放不得读取实时序列"))
+    page.pending = (inst, bar, data[0][0], data[-1][0], session_id, "0", "0")
+    try:
+        page.loaded(snapshot, None)
+        finish_jobs(service)
+        assert len(page.session.visible()) == 6000
+        assert page.chart.times[-1] == data[9000][0]
+        page.chart.follow = False
+        page.chart.left_time = data[100][0]
+        page.chart.count = 100
+        page.refresh_chart()
+        finish_jobs(service)
+        assert data[100][0] in page.chart.times
+        assert len(page.chart.times) < 500
+        page.chart.latest()
+        page.refresh_chart()
+        finish_jobs(service)
+        assert page.chart.times[-1] == data[9000][0]
+        assert page.chart.rows == page.session.visible()
+        page.chart.follow = False
+        page.chart.count = 10000
+        page.chart.left_time = data[0][0]
+        page.refresh_chart()
+        finish_jobs(service)
+        assert page.series.pair[1] != bar
+        assert page.chart.times[-1] <= data[9000][0]
+        assert len(page.chart.times) < 2000
+    finally:
+        page.shutdown()
+        page.deleteLater()
+    assert snapshot.closed
+
+
+def test_strategy_page_computes_in_background_and_closes_dataset(service, app):
+    from coinpilot_ai.research.strategy_panel import StrategyPage
+    from coinpilot_ai.market.history import HistoryData
+    inst = service.selected
+    service.specs[inst] = {"ctType": "linear", "settleCcy": "USDT", "ctVal": "1", "lotSz": "1", "minSz": "1"}
+    page = StrategyPage(service)
+    page.pending = {"instrument": inst, "bar": "15m", "direction": "long", "stop_percent": "1", "target_percent": "1",
+        "risk_percent": "1", "conditions": [{"metric": "indicator", "indicator": {"kind": "MA"}, "op": "above", "threshold": "1000"}]}
+    page.run_options = dict(initial="10000", fee_rate="0", slippage_bps="0")
+    snapshot = HistoryData.create(CandleBuffer(candles(1000)), 900000)
+    try:
+        page.loaded(snapshot, None)
+        assert page.job is not None
+        finish_jobs(service)
+        assert page.job is None and snapshot.closed
+        assert len(service.store.list("backtest")) == 1
+        assert "1000 根" in page.status.text()
+    finally:
+        page.shutdown()
+        page.deleteLater()
+
+
+
+def test_derived_lod_correction_preserves_official_candles_and_owner(service, monkeypatch):
+    feed = service.chart_feed
+    pair = (service.selected, "5m")
+    source = candles(5, begin=300000, interval=60000)
+    service.market_cache.put(pair[0], "1m", source)
+    monkeypatch.setattr(feed, "fetch", lambda *args, **kwargs: None)
+    owner = object()
+    feed.ensure_display(owner, pair[0], "1m", "5m", 300000, 5)
+    finish_jobs(service)
+    assert service.candles[pair][0][2] == float(source[-1][2])
+    source[2][2] = "150"
+    service.market_cache.put(pair[0], "1m", [source[2]])
+    feed.ensure_display(owner, pair[0], "1m", "5m", 300000, 5)
+    finish_jobs(service)
+    assert service.candles[pair][0][2] == 150
+    official = list(service.candles[pair][0]); official[2] = 151
+    feed.merge(pair, [official])
+    feed.ensure_display(owner, pair[0], "1m", "5m", 300000, 5)
+    finish_jobs(service)
+    assert service.candles[pair][0][2] == 151
+    feed.ensure_display(owner, pair[0], "1m", "5m", 300000, 5)
+    feed.set_view(owner, (pair[0], "15m"), 900000, 30)
+    finish_jobs(service)
+    assert owner not in feed.view_windows.get(pair, {})
+    assert owner in feed.view_windows[(pair[0], "15m")]
+
+
+@pytest.mark.parametrize("bar", ["1s", "3m", "2H", "5D", "1W", "1M", "3M", "1Mutc"])
+def test_exchange_period_selection_and_rest_parameter(service, bar, monkeypatch):
+    from coinpilot_ai.market.intervals import BARS
+    calls = []
+    monkeypatch.setattr(service.api, "get", lambda path, done, params: calls.append((path, params)))
+    panel = ChartPanel(service)
+    try:
+        assert set(panel.period_actions) == set(BARS)
+        assert {panel.compact_bar.itemData(i) for i in range(panel.compact_bar.count())} == set(BARS)
+        panel.period_actions[bar].trigger()
+        assert service.bar == bar
+        finish_jobs(service)
+        assert any(params["bar"] == bar for _, params in calls)
+        assert panel.period_actions[bar].isChecked()
+        assert panel.compact_bar.currentData() == bar
+    finally:
+        panel.close()
+        panel.deleteLater()
+
+
+def test_monthly_series_and_cross_period_indicator_use_real_close(service):
+    from datetime import datetime
+    from coinpilot_ai.market.intervals import shift
+    from coinpilot_ai.market.indicators import IndicatorResult
+    begin = int(datetime.fromisoformat("2024-01-01T00:00:00+00:00").timestamp()*1000)
+    data = [(shift(begin, "1Mutc", i), 100., 130., 90., 100.+i*10, 10., 0., 0., 1) for i in range(3)]
+    pair = (service.selected, "1Mutc")
+    service.chart_feed.merge(pair, data, persist=False)
+    series = service.chart_feed.get_series(pair)
+    finish_jobs(service)
+    period = series.periods[0]
+    assert series.data.emas[0][1] == pytest.approx(100+2/(period+1)*10)
+    canvas = CandleChart(service)
+    try:
+        canvas.set_context("demo", service.selected, "1Dutc")
+        feb_end = shift(data[1][0], "1Mutc")
+        canvas.set_data([(feb_end-86400000*i, 100., 130., 90., 100., 10., 0., 0., 1) for i in (2, 1, 0)])
+        result = IndicatorResult("MA", (data[1][0],), {"value": (123.,)}, (True,))
+        assert canvas.align_indicator(result, "1Mutc").lines["value"] == (None, 123., 123.)
+    finally:
+        canvas.close()
+        canvas.deleteLater()
+
+
+def test_monthly_visible_range_does_not_request_phantom_gaps(service, monkeypatch):
+    from datetime import datetime
+    from coinpilot_ai.market.intervals import shift
+    begin = int(datetime.fromisoformat("2024-01-01T00:00:00+00:00").timestamp()*1000)
+    pair = (service.selected, "1Mutc")
+    data = [(shift(begin, pair[1], i), 100., 103., 99., 101., 10., 0., 0., 1) for i in range(5)]
+    service.chart_feed.merge(pair, data, persist=False)
+    calls = []
+    monkeypatch.setattr(service.api, "get", lambda *args: calls.append(args))
+    service.chart_feed.ensure_range(pair, begin, 5)
+    finish_jobs(service)
+    assert calls == []

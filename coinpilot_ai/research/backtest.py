@@ -1,10 +1,10 @@
 """已收盘指标信号、下一根开盘成交的单持仓策略回测。"""
 from decimal import Decimal, ROUND_FLOOR
 
-from coinpilot_ai.market.candles import valid_candles
-from coinpilot_ai.market.intervals import BARS
+from coinpilot_ai.market.buffer import candle
+from coinpilot_ai.market.intervals import BARS, contiguous
 from coinpilot_ai.trading.models import number
-from coinpilot_ai.market.indicators import calculate, validate_spec
+from coinpilot_ai.market.indicators import IndicatorStream, validate_spec
 from coinpilot_ai.trading.matching import execution_fee, execution_price, protective_exit
 
 
@@ -29,29 +29,51 @@ def validate_strategy(strategy):
     return strategy
 
 
-def _condition_series(rows, condition):
-    primary = calculate(rows, condition["indicator"])
-    lhs = primary.lines.get(condition.get("line") or next(iter(primary.lines)))
-    if lhs is None:
-        raise ValueError("指标数值线不存在")
-    if "compare" in condition:
-        second = calculate(rows, condition["compare"]["indicator"])
-        rhs = second.lines.get(condition["compare"].get("line") or next(iter(second.lines)))
-        if rhs is None:
-            raise ValueError("比较指标数值线不存在")
-    else:
-        rhs = [float(number(condition["threshold"]))]*len(rows)
-    return lhs, rhs
+class CurveWindow:
+    """按相邻时间桶压缩，保留首尾及桶内权益极值。"""
+    def __init__(self, limit=4096):
+        self.limit, self.width, self.buckets = limit, 1, []
+
+    def append(self, index, point):
+        bucket = index//self.width
+        if self.buckets and self.buckets[-1][0] == bucket:
+            points = self.buckets[-1][1]+[point]
+            self.buckets[-1] = (bucket, self.compact(points))
+        else:
+            self.buckets.append((bucket, [point]))
+        if len(self.buckets)*4 > self.limit:
+            self.width *= 2
+            merged = []
+            for key, points in self.buckets:
+                key //= 2
+                if merged and merged[-1][0] == key:
+                    merged[-1] = (key, self.compact(merged[-1][1]+points))
+                else:
+                    merged.append((key, points))
+            self.buckets = merged
+
+    @staticmethod
+    def compact(points):
+        choices = (points[0], min(points, key=lambda p: p['equity']),
+                   max(points, key=lambda p: p['equity']), points[-1])
+        return sorted({p['time']: p for p in choices}.values(), key=lambda p: p['time'])
+
+    def points(self):
+        return [point for _, points in self.buckets for point in points]
 
 
-def run_backtest(rows, strategy, spec, *, initial="10000", fee_rate="0.0005", slippage_bps="0"):
+def run_backtest(rows, strategy, spec, *, initial="10000", fee_rate="0.0005", slippage_bps="0", cancelled=lambda: False):
     validate_strategy(strategy)
-    rows = valid_candles(rows)
-    if len(rows) < 2 or any(str(row[8]) != "1" for row in rows):
+    if len(rows) < 2:
         raise ValueError("回测需要已收盘 K 线")
-    step = BARS[strategy["bar"]]*1000
-    if any(int(b[0])-int(a[0]) != step for a, b in zip(rows, rows[1:])):
-        raise ValueError("历史 K 线存在缺口，不能回测")
+    def checked(row, previous=None):
+        value = candle(row)
+        if value[8] != 1:
+            raise ValueError("回测需要已收盘 K 线")
+        if previous is not None and not contiguous(previous[0], value[0], strategy["bar"]):
+            raise ValueError("历史 K 线存在缺口，不能回测")
+        return value
+    first = checked(rows[0])
     if spec.get("ctType") != "linear" or spec.get("settleCcy") != "USDT":
         raise ValueError("仅支持 USDT 本位线性永续")
     unit = number(spec["ctVal"], positive=True) * number(spec.get("ctMult") or "1", positive=True)
@@ -62,17 +84,38 @@ def run_backtest(rows, strategy, spec, *, initial="10000", fee_rate="0.0005", sl
     slip = number(slippage_bps)
     if not 0 <= fee <= 1 or not 0 <= slip < 10000:
         raise ValueError("手续费率须在 0—1，滑点须低于 10000 基点")
-    signals = [_condition_series(rows, condition) for condition in strategy["conditions"]]
-    trades, curve, position = [], [], None
+    streams = {}
+    def stream(spec):
+        normalized = validate_spec(spec)
+        key = normalized["kind"], tuple(sorted(normalized["params"].items()))
+        if key not in streams:
+            streams[key] = IndicatorStream(normalized, strategy["bar"])
+            streams[key].push(first)
+        return streams[key]
+    signals = [(stream(c["indicator"]), stream(c["compare"]["indicator"]) if "compare" in c else None)
+               for c in strategy["conditions"]]
+    trades, curve, position = [], CurveWindow(), None
+    peak, drawdown = equity, Decimal(0)
+    previous_row = first
+    def pair_values(state, name):
+        lines = state.state.result.lines
+        values = lines.get(name or next(iter(lines)))
+        if values is None:
+            raise ValueError("指标数值线不存在")
+        return (values[-2] if len(values) >= 2 else None), values[-1]
     direction = 1 if strategy["direction"] == "long" else -1
     for index in range(1, len(rows)):
-        row = rows[index]
+        if cancelled():
+            raise ValueError("回测已取消")
+        row = checked(rows[index], previous_row)
+        previous_row = row
         opened, high, low, closed = [number(row[j]) for j in (1, 2, 3, 4)]
         if position is None:
             checks = []
             for condition, (left, right) in zip(strategy["conditions"], signals):
-                previous, current = left[index-2] if index >= 2 else None, left[index-1]
-                rhs_previous, rhs_current = right[index-2] if index >= 2 else None, right[index-1]
+                previous, current = pair_values(left, condition.get("line"))
+                rhs_previous, rhs_current = (pair_values(right, condition["compare"].get("line"))
+                    if right else (float(number(condition["threshold"])),)*2)
                 if current is None or rhs_current is None:
                     checks.append(False)
                     continue
@@ -105,15 +148,14 @@ def run_backtest(rows, strategy, spec, *, initial="10000", fee_rate="0.0005", sl
                                "gross": gross, "fees": costs, "net": net, "cause": cause,
                                "ambiguous": ambiguous})
                 position = None
-        curve.append({"time": int(row[0]), "equity": equity})
+        curve.append(index, {"time": int(row[0]), "equity": equity})
+        peak = max(peak, equity)
+        drawdown = max(drawdown, peak-equity)
+        for state in streams.values():
+            state.push(row)
     gains = sum((max(trade["net"], 0) for trade in trades), Decimal(0))
     losses = sum((max(-trade["net"], 0) for trade in trades), Decimal(0))
-    peak = number(initial)
-    drawdown = Decimal(0)
-    for point in curve:
-        peak = max(peak, point["equity"])
-        drawdown = max(drawdown, peak-point["equity"])
-    return {"trades": trades, "equity_curve": curve, "open_position": position,
+    return {"trades": trades, "equity_curve": curve.points(), "open_position": position,
             "final_realized_equity": equity, "max_drawdown": drawdown,
             "win_rate": sum(trade["net"] > 0 for trade in trades)/len(trades) if trades else None,
             "profit_factor": gains/losses if losses else None,

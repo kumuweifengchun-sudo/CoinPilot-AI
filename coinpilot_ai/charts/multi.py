@@ -3,6 +3,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import QCheckBox, QComboBox, QGridLayout, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from .panel import ChartPanel
+from coinpilot_ai.market.lod import MAX_VIEW_BARS
 from coinpilot_ai.market.intervals import BARS
 
 
@@ -144,7 +145,7 @@ class MultiChart(QWidget):
                     target.canvas.follow = source.canvas.follow
                 if self.sync_options["zoom"].isChecked():
                     span = source.canvas.count * source.canvas.interval
-                    target.canvas.count = max(15., min(2000., span / target.canvas.interval))
+                    target.canvas.count = max(15., min(MAX_VIEW_BARS, span / target.canvas.interval))
                 target.canvas._plot_revision += 1
                 target.canvas.update()
                 target.canvas.save_timer.start()

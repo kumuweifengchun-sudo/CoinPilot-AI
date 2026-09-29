@@ -1,11 +1,12 @@
 """从已收盘 K 线截取价格走势，并按目标价格投影。"""
 import math
+from coinpilot_ai.market.intervals import contiguous
 
 
 MAX_PATTERN_POINTS = 500
 
 
-def capture_pattern(rows, interval):
+def capture_pattern(rows, interval, *, bar=None):
     """返回源时间与收盘价快照；不允许用缺口或未收盘数据补造走势。"""
     if not 2 <= len(rows) <= MAX_PATTERN_POINTS:
         raise ValueError(f"请选择 2—{MAX_PATTERN_POINTS} 根 K 线")
@@ -16,7 +17,7 @@ def capture_pattern(rows, interval):
         stamp, close = int(row[0]), float(row[4])
         if not math.isfinite(close) or close <= 0:
             raise ValueError("源区间存在无效收盘价")
-        if stamps and stamp - stamps[-1] != interval:
+        if stamps and (not contiguous(stamps[-1], stamp, bar) if bar else stamp - stamps[-1] != interval):
             raise ValueError("源区间存在 K 线缺口")
         stamps.append(stamp)
         closes.append(close)

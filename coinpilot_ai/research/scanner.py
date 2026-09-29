@@ -5,7 +5,7 @@ from collections import deque
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 from coinpilot_ai.market.candles import valid_candles
-from coinpilot_ai.market.indicators import calculate
+from coinpilot_ai.market.indicators import IndicatorRegistry
 
 
 TEMPLATES = {
@@ -36,8 +36,8 @@ def parse_tickers(rows, specs, now):
     return result
 
 
-def scan_metrics(rows):
-    complete = [row for row in rows if len(row) > 8 and str(row[8]) == "1"]
+def scan_metrics(rows, provider=None, pair=("scan", "15m")):
+    complete = [row for row in rows[-100:] if len(row) > 8 and str(row[8]) == "1"]
     if len(complete) < 97:
         return None
     step = 900000
@@ -47,11 +47,24 @@ def scan_metrics(rows):
     closes = [float(row[4]) for row in tail]
     volumes = [float(row[5]) for row in tail]
     previous = sum(volumes[-21:-1])/20
-    ema_fast = calculate(tail, {"kind": "EMA", "params": {"period": 20}}).lines["value"]
-    ema_slow = calculate(tail, {"kind": "EMA", "params": {"period": 60}}).lines["value"]
-    macd = calculate(tail, {"kind": "MACD"}).lines
-    rsi = calculate(tail, {"kind": "RSI"}).lines["value"][-1]
-    atr = calculate(tail, {"kind": "ATR"}).lines["value"][-1]
+    provider = provider or IndicatorRegistry().get
+    results = [provider(pair, rows, spec) for spec in (
+        {"kind": "EMA", "params": {"period": 20}}, {"kind": "EMA", "params": {"period": 60}},
+        {"kind": "MACD"}, {"kind": "RSI"}, {"kind": "ATR"})]
+    from bisect import bisect_left
+    lines = []
+    for result in results:
+        index = bisect_left(result.times, int(tail[-1][0]))
+        if index < 1 or index >= len(result.times) or result.times[index] != int(tail[-1][0]):
+            return None
+        if result.times[index]-result.times[index-1] != step:
+            return None
+        values = {name: values[index-1:index+1] for name, values in result.lines.items()}
+        if any(value is None for values in values.values() for value in values):
+            return None
+        lines.append(values)
+    ema_fast, ema_slow = lines[0]["value"], lines[1]["value"]
+    macd, rsi, atr = lines[2], lines[3]["value"][-1], lines[4]["value"][-1]
     return {"change": (closes[-1]/closes[-2]-1)*100,
             "volume_ratio": volumes[-1]/previous if previous else None,
             "rsi": rsi, "breakout": closes[-1] > max(float(row[2]) for row in tail[:-1]),
@@ -100,6 +113,13 @@ class MarketScanner(QObject):
         self.timer.setInterval(350)
         self.timer.timeout.connect(self.tick)
         service.updated.connect(self.service_updated)
+        service.chart_feed.indicators_changed.connect(self.indicators_ready)
+        service.chart_feed.series_changed.connect(lambda change: self.indicators_ready(change.pair))
+
+    def indicators_ready(self, pair):
+        self.metric_cache.pop(pair, None)
+        if self.active:
+            self.changed.emit()
 
     def start(self):
         if self.active:
@@ -200,7 +220,8 @@ class MarketScanner(QObject):
                 revision = self.service.chart_feed.revisions.get(pair, 0)
                 cached = self.metric_cache.get(pair)
                 if cached is None or cached[0] != revision:
-                    cached = (revision, scan_metrics(self.service.candles.get(pair, [])))
+                    cached = (revision, scan_metrics(self.service.candles.get(pair, []),
+                        self.service.chart_feed.rule_indicator, pair))
                     self.metric_cache[pair] = cached
                 metrics = cached[1]
                 if metrics is not None and not -5 <= now-(metrics["candle"]/1000+900) <= 930:

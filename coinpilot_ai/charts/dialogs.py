@@ -5,7 +5,7 @@ import math
 from PyQt6.QtCore import QDateTime, Qt, QItemSelectionModel
 from PyQt6.QtGui import QColor, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QColorDialog, QComboBox, QDateTimeEdit, QDialog,
-    QDialogButtonBox, QDoubleSpinBox, QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+    QDialogButtonBox, QDoubleSpinBox, QFormLayout, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QPushButton, QScrollArea, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from coinpilot_ai.market.intervals import BARS
@@ -27,7 +27,7 @@ class DateJumpDialog(QDialog):
         layout.addWidget(QLabel("选择日期和时间（本机时间）"))
         self.date = QDateTimeEdit(QDateTime.fromMSecsSinceEpoch(int(stamp)))
         self.date.setCalendarPopup(True)
-        self.date.setDisplayFormat("yyyy-MM-dd HH:mm")
+        self.date.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
         self.date.setMaximumDateTime(QDateTime.currentDateTime())
         layout.addWidget(self.date)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -221,16 +221,16 @@ class DrawingDialog(QDialog):
         row.addWidget(self.hidden)
         row.addStretch()
         root.addLayout(row)
-        row = QHBoxLayout()
-        row.addWidget(QLabel("显示周期"))
+        root.addWidget(QLabel("显示周期（utc 后缀为 UTC+0 开盘）"))
+        row = QGridLayout()
         self.bars = {}
-        for bar in BARS:
+        for index, bar in enumerate(BARS):
             check = QCheckBox(bar)
             check.setChecked(bar in obj["bars"])
             if obj['tool'] == 'price_pattern':
                 check.setEnabled(False)
             self.bars[bar] = check
-            row.addWidget(check)
+            row.addWidget(check, index//6, index%6)
         root.addLayout(row)
         self.levels = None
         if obj["tool"] == "fib":

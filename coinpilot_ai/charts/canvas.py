@@ -8,7 +8,9 @@ from PyQt6.QtCore import QPointF, QRect, QRectF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import QApplication, QColorDialog, QInputDialog, QMenu, QToolTip, QWidget
 
-from coinpilot_ai.market.intervals import BARS
+from coinpilot_ai.market.intervals import BARS, shift
+from coinpilot_ai.market.lod import MAX_VIEW_BARS
+from coinpilot_ai.market.buffer import CandleBuffer, ValueView
 from coinpilot_ai.charts.state import default_emas, drawing, ema_values, name_drawings
 from coinpilot_ai.charts.position import POSITION_TOOLS, position_metrics
 from coinpilot_ai.charts.pattern import capture_pattern, projected_prices
@@ -122,7 +124,7 @@ class CandleChart(ChartRenderer, QWidget):
 
     def restore_view(self, data):
         self._fit_key = None
-        self.count = max(15., min(2000., float(data.get("count", 100))))
+        self.count = max(15., min(MAX_VIEW_BARS, float(data.get("count", 100))))
         self.left_time = data.get("left_time")
         self.follow, self.auto_scale = data.get("follow", True), data.get("auto", True)
         self.low, self.high = data.get("low", 0.), data.get("high", 1.)
@@ -188,8 +190,8 @@ class CandleChart(ChartRenderer, QWidget):
         if rows is self.rows:
             return
         try:
-            values = [[float(v) for v in row[1:6]] for row in rows]
-            times = [int(row[0]) for row in rows]
+            rows = rows if isinstance(rows, CandleBuffer) else CandleBuffer(rows)
+            values, times = ValueView(rows), rows.times
         except (ValueError, TypeError, IndexError):
             return
         self.rows, self.values, self.times = rows, values, times
@@ -234,7 +236,10 @@ class CandleChart(ChartRenderer, QWidget):
                 if setting["visible"]:
                     try:
                         source_bar = setting.get("bar", "chart")
-                        if source_bar not in ("chart", self.bar) and self.service:
+                        rendered_bar = self._series.pair[1] if self._series else self.bar
+                        if self.environment == "replay" and source_bar not in ("chart", rendered_bar):
+                            continue
+                        if source_bar not in ("chart", rendered_bar) and self.service:
                             source = self.service.chart_feed.get_series((self.instrument, source_bar))
                             result = self.service.chart_feed.indicator(source, setting)
                             result = self.align_indicator(result, source_bar)
@@ -249,13 +254,13 @@ class CandleChart(ChartRenderer, QWidget):
 
     def align_indicator(self, result, source_bar):
         """跨周期只使用在目标 K 线时点已经确认的源 K 线。"""
-        source_close = [stamp+BARS[source_bar]*1000 for stamp in result.times]
+        source_close = [shift(stamp, source_bar) for stamp in result.times]
         chart_times = tuple(int(row[0]) for row in self.rows)
         lines = {name: [] for name in result.lines}
         confirmed = []
         index = -1
         for stamp, row in zip(chart_times, self.rows):
-            cutoff = stamp+BARS[self.bar]*1000
+            cutoff = shift(stamp, self.render_bar)
             while index+1 < len(source_close) and source_close[index+1] <= cutoff:
                 index += 1
             usable = index
@@ -267,6 +272,14 @@ class CandleChart(ChartRenderer, QWidget):
         return IndicatorResult(result.kind, chart_times,
                                {name: tuple(values) for name, values in lines.items()}, tuple(confirmed))
         self.update()
+
+    @property
+    def render_bar(self):
+        return self._series.pair[1] if self._series is not None else self.bar
+
+    @property
+    def render_interval(self):
+        return BARS[self._series.pair[1]]*1000 if self._series is not None else self.interval
 
     @property
     def interval(self):
@@ -316,7 +329,7 @@ class CandleChart(ChartRenderer, QWidget):
 
     def x(self, stamp):
         main, _ = self.plot_rects()
-        return main.left() + (self.index_at(stamp)-self.left_index()+.5)*main.width()/self.count
+        return main.left() + (self.index_at(stamp)-self.left_index()+.5*self.render_interval/self.interval)*main.width()/self.count
 
     def y(self, price):
         main, _ = self.plot_rects()
@@ -324,7 +337,7 @@ class CandleChart(ChartRenderer, QWidget):
 
     def anchor(self, position):
         main, _ = self.plot_rects()
-        index = self.left_index() + (position.x()-main.left())/main.width()*self.count-.5
+        index = self.left_index() + (position.x()-main.left())/main.width()*self.count-.5*self.render_interval/self.interval
         price = self.low + (main.bottom()-position.y())/main.height()*(self.high-self.low)
         return [self.time_at(index), price]
 
@@ -431,7 +444,7 @@ class CandleChart(ChartRenderer, QWidget):
         main, _ = self.plot_rects()
         fraction = max(0, min(1, (pixel-main.left())/main.width()))
         fixed_index = self.left_index()+fraction*self.count
-        self.count = max(15., min(2000., self.count*factor))
+        self.count = max(15., min(MAX_VIEW_BARS, self.count*factor))
         self.left_time = self.time_at(fixed_index-fraction*self.count)
         self.follow = False
         self.change_view()
@@ -515,13 +528,13 @@ class CandleChart(ChartRenderer, QWidget):
             self.update()
             return
         try:
-            source_start, source_end, closes = capture_pattern(self.rows[first:last+1], self.interval)
+            source_start, source_end, closes = capture_pattern(self.rows[first:last+1], self.render_interval, bar=self.render_bar)
         except (ValueError, TypeError, IndexError) as exc:
             QToolTip.showText(self.mapToGlobal(position.toPoint()), str(exc), self, QRect(), 2500)
             self.update()
             return
         obj = drawing("price_pattern", [self.pattern_anchor(position)])
-        obj.update(closes=closes, interval=self.interval, source_start=source_start,
+        obj.update(closes=closes, interval=self.render_interval, source_start=source_start,
                    source_end=source_end, bars=[self.bar], opacity=75, color="#d58cff", width=2.5)
         self.preview = obj
         QToolTip.showText(self.mapToGlobal(position.toPoint()), "移动到目标日期，单击放置走势", self, QRect(), 2500)
@@ -689,7 +702,7 @@ class CandleChart(ChartRenderer, QWidget):
                 span = max(1e-12, (d["high"]-d["low"])*math.exp(max(-10, min(10, dy/150))))
                 self.low, self.high = center-span/2, center+span/2
             elif d["mode"] == "time":
-                self.count = max(15., min(2000., d["count"]*math.exp(max(-6, min(6, -dx/250)))))
+                self.count = max(15., min(MAX_VIEW_BARS, d["count"]*math.exp(max(-6, min(6, -dx/250)))))
                 self.left_time = self.time_at(d["left"]+d["count"]-self.count)
                 self.follow = False
             elif d["mode"] == "volume":

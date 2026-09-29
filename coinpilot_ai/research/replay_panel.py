@@ -1,5 +1,4 @@
 """Bar Replay 与独立训练账户。"""
-from pathlib import Path
 from uuid import uuid4
 
 from PyQt6.QtCore import QDateTime, QTimer
@@ -7,9 +6,11 @@ from PyQt6.QtWidgets import (QComboBox, QDateTimeEdit, QFormLayout, QHBoxLayout,
                              QLineEdit, QScrollArea, QSpinBox, QTabWidget, QVBoxLayout, QWidget)
 
 from coinpilot_ai.charts.canvas import CandleChart
-from coinpilot_ai.market.intervals import BARS
+from coinpilot_ai.market.intervals import BARS, shift, floor_time
 from coinpilot_ai.trading.models import instrument_id, number
-from coinpilot_ai.market.cache import HistoryLoader, MarketCache
+from coinpilot_ai.market.cache import HistoryLoader
+from coinpilot_ai.market.series import ChartSeries
+from coinpilot_ai.market.lod import display_bar
 from .replay import ReplaySession
 from coinpilot_ai.ui.common import button, confirm, fill_table, selected_id, table
 from coinpilot_ai.review.equity_curve import EquityCurve
@@ -24,10 +25,14 @@ class ReplayPage(QWidget):
     def __init__(self, service, parent=None):
         super().__init__(parent)
         self.service = service
-        self.cache = MarketCache(Path(service.store.path).with_suffix(".market.sqlite3"))
+        self.cache = service.market_cache
         self.loader = HistoryLoader(service, self.cache, self)
         self.loader.finished.connect(self.loaded)
         self.session = None
+        self.series = None
+        self.view_job = None
+        self.view_generation = 0
+        self.view_request = None
         self.training_trades = []
         self.pending = None
         root = QVBoxLayout(self)
@@ -48,7 +53,7 @@ class ReplayPage(QWidget):
         self.begin.setDisplayFormat("yyyy-MM-dd HH:mm")
         controls.addWidget(self.begin)
         self.count = QSpinBox()
-        self.count.setRange(20, 2000)
+        self.count.setRange(20, 5_256_000)
         self.count.setValue(200)
         controls.addWidget(self.count)
         self.fee = QLineEdit(str(service.settings.get("paper_fee", "0.0005")))
@@ -88,7 +93,13 @@ class ReplayPage(QWidget):
         root.addWidget(self.indicator_scroll)
         self.indicator_strips = []
         self.rebuild_indicators()
+        self.view_timer = QTimer(self)
+        self.view_timer.setSingleShot(True)
+        self.view_timer.setInterval(120)
+        self.view_timer.timeout.connect(self.refresh_chart)
+        self.chart.view_changed.connect(self.schedule_chart)
         self.chart.view_changed.connect(self.update_indicators)
+        service.chart_feed.indicators_changed.connect(self.indicators_ready)
         service.chart_book.changed.connect(self.indicator_changed)
         trade = QHBoxLayout()
         self.side = QComboBox()
@@ -163,6 +174,8 @@ class ReplayPage(QWidget):
 
     def load(self):
         self.pause()
+        self.view_generation += 1
+        self.view_request = None
         try:
             session_id = self.saved.currentData()
             record = self.service.store.get("replay_session", session_id) if session_id else None
@@ -173,7 +186,7 @@ class ReplayPage(QWidget):
             inst = record["instrument"] if record else instrument_id(self.symbol.text())
             bar = record["bar"] if record else self.bar.currentData()
             begin = record["begin"] if record else self.begin.dateTime().toMSecsSinceEpoch()
-            end = record["end"] if record else begin + (self.count.value()-1)*BARS[bar]*1000
+            end = record["end"] if record else shift(floor_time(begin, bar), bar, self.count.value()-1)
             if inst not in self.service.specs:
                 raise ValueError("尚未获取该合约规格；请等待公共行情同步")
             self.pending = (inst, bar, begin, end, session_id, str(fee), str(slippage))
@@ -184,6 +197,8 @@ class ReplayPage(QWidget):
 
     def loaded(self, rows, error):
         if not self.pending:
+            if hasattr(rows, "close"):
+                rows.close()
             return
         inst, bar, _, _, session_id, fee, slippage = self.pending
         self.pending = None
@@ -191,8 +206,17 @@ class ReplayPage(QWidget):
             self.status.setText(str(error))
             return
         try:
+            if self.session:
+                self.session.close()
+            if self.series:
+                self.series.cancel()
+                self.service.chart_feed.indicator_cache.pop(self.series.pair, None)
+                self.series.deleteLater()
             self.session = ReplaySession(self.service.store, self.service.specs, inst, bar, rows,
                                          session_id, fee=fee, slippage_bps=slippage)
+            self.series = ChartSeries((self.session.scope, bar),
+                                      [e["period"] for e in self.service.chart_book.emas], self.service.chart_feed)
+            self.series.changed.connect(self.series_ready)
             self.equity_curve.scope = self.session.scope
             self.chart.set_context("replay", inst, bar)
             self.session.evaluate_rules(self.service.rules())
@@ -206,7 +230,7 @@ class ReplayPage(QWidget):
         session = self.session
         if not session:
             return
-        self.chart.set_data(session.visible(), f"训练回放 · {session.instrument} · {session.bar}")
+        self.refresh_chart()
         self.status.setText(f"{session.cursor+1}/{len(session.rows)} 根 · 训练账户 {session.id[:8]} · "
                             f"虚拟权益 {session.broker.snapshot()[1]['totalEq']} USDT")
         fills = [row for _, row in self.service.store.list("fills", session.scope)]
@@ -232,6 +256,77 @@ class ReplayPage(QWidget):
         self.refresh_training_stats()
         self.update_indicators()
         self.equity_curve.update()
+
+    def schedule_chart(self):
+        if self.session:
+            self.view_timer.start()
+
+    def refresh_chart(self):
+        session = self.session
+        if session is None or self.service.closed:
+            return
+        self.chart.title = f"训练回放 · {session.instrument} · {session.bar}"
+        bar = display_bar(session.bar, self.chart.count, self.chart.plot_rects()[0].width())
+        if bar != session.bar:
+            self.chart.title += f" · 显示 {bar}"
+        if self.chart.follow and bar == session.bar and self.chart.count < 5500:
+            self.view_generation += 1
+            self.view_request = None
+            self.publish_window(session.visible(), bar, incremental=True)
+            return
+        interval = BARS[session.bar]*1000
+        left = (session.rows[session.cursor][0]-(self.chart.count-5)*interval
+                if self.chart.follow or self.chart.left_time is None else self.chart.left_time)
+        end = min(session.rows[session.cursor][0], left+(self.chart.count+1)*interval)
+        request = (session.id, bar, left, self.chart.count, end)
+        if request == self.view_request:
+            return
+        self.view_request = request
+        self.view_generation += 1
+        generation, cursor, count = self.view_generation, session.cursor, self.chart.count
+        if self.view_job is not None:
+            self.service.compute.cancel(self.view_job)
+        def ready(rows, error):
+            if generation != self.view_generation or session is not self.session:
+                return
+            self.view_job = None
+            if error:
+                self.status.setText(str(error))
+                return
+            self.publish_window(rows, bar)
+        self.view_job = self.service.compute.submit(
+            lambda: session.rows.window(cursor, left, count, session.bar, bar,
+                cancelled=lambda: generation != self.view_generation or self.service.closed), ready)
+
+    def publish_window(self, rows, bar, *, incremental=False):
+        pair = (self.session.scope, bar)
+        if self.series is None or self.series.pair != pair:
+            if self.series:
+                self.series.cancel()
+                self.service.chart_feed.indicator_cache.pop(self.series.pair, None)
+                self.series.deleteLater()
+            self.series = ChartSeries(pair, [e["period"] for e in self.service.chart_book.emas], self.service.chart_feed)
+            self.series.changed.connect(self.series_ready)
+        incremental = incremental and self.series.source is rows
+        previous = self.series.data.times
+        dropped = 0
+        if previous and rows and rows[0][0] > previous[0]:
+            from bisect import bisect_left
+            dropped = bisect_left(previous, rows[0][0])
+        start = max(0, len(previous)-dropped) if incremental else 0
+        self.series.update(rows, start, structural=not incremental or not bool(previous), dropped=dropped)
+
+    def series_ready(self, change):
+        if self.series and change.pair == self.series.pair:
+            self.chart.bind_series(self.series, change)
+            self.update_indicators()
+
+    def indicators_ready(self, pair):
+        if self.series and pair == self.series.pair:
+            self.chart.calculate_indicators()
+            self.chart._plot_revision += 1
+            self.chart.update()
+            self.update_indicators()
 
     def refresh_training_stats(self, *_):
         group = self.stats_group.currentData()
@@ -263,6 +358,8 @@ class ReplayPage(QWidget):
         IndicatorSettingsDialog(self.service.chart_book, self).exec()
 
     def indicator_changed(self, kind, _key):
+        if kind == "ema" and self.series:
+            self.series.set_periods([e["period"] for e in self.service.chart_book.emas])
         if kind == "indicators":
             self.rebuild_indicators()
             self.update_indicators()
@@ -320,5 +417,14 @@ class ReplayPage(QWidget):
 
     def shutdown(self):
         self.pause()
+        self.view_timer.stop()
+        self.view_generation += 1
+        if self.view_job is not None:
+            self.service.compute.cancel(self.view_job)
         self.loader.cancel()
-        self.cache.close()
+        self.pending = None
+        if self.series:
+            self.series.cancel()
+            self.service.chart_feed.indicator_cache.pop(self.series.pair, None)
+        if self.session:
+            self.session.close()

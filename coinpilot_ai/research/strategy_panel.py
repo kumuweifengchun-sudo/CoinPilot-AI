@@ -1,5 +1,6 @@
 """可视化指标策略编辑与确定性回测。"""
-from pathlib import Path
+
+from threading import Event
 
 from PyQt6.QtCore import QDateTime
 from PyQt6.QtWidgets import (QComboBox, QDateTimeEdit, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
@@ -8,7 +9,7 @@ from PyQt6.QtWidgets import (QComboBox, QDateTimeEdit, QFormLayout, QHBoxLayout,
 from .backtest import run_backtest, validate_strategy
 from coinpilot_ai.market.intervals import BARS
 from coinpilot_ai.trading.models import instrument_id
-from coinpilot_ai.market.cache import HistoryLoader, MarketCache
+from coinpilot_ai.market.cache import HistoryLoader
 from coinpilot_ai.review.equity_curve import EquityCurve
 from coinpilot_ai.ui.common import button, fill_table, table
 from coinpilot_ai.trading.dialogs import IndicatorConditionDialog
@@ -18,11 +19,14 @@ class StrategyPage(QWidget):
     def __init__(self, service, parent=None):
         super().__init__(parent)
         self.service = service
-        self.cache = MarketCache(Path(service.store.path).with_suffix(".market.sqlite3"))
+        self.cache = service.market_cache
         self.loader = HistoryLoader(service, self.cache, self)
         self.loader.finished.connect(self.loaded)
         self.conditions = []
         self.pending = None
+        self.job = None
+        self.cancelled = Event()
+        self.generation = 0
         root = QVBoxLayout(self)
         form = QFormLayout()
         self.saved = QComboBox()
@@ -151,7 +155,12 @@ class StrategyPage(QWidget):
             begin, end = self.begin.dateTime().toMSecsSinceEpoch(), self.end.dateTime().toMSecsSinceEpoch()
             if begin >= end:
                 raise ValueError("结束时间必须晚于起始时间")
+            self.cancelled.set()
+            self.cancelled = Event()
+            self.generation += 1
             self.pending = strategy
+            self.run_options = dict(initial=self.initial.text(), fee_rate=self.fee.text(),
+                                    slippage_bps=self.slippage.text())
             self.status.setText("正在读取历史数据…")
             self.loader.load(inst, bar, begin, end)
         except (ValueError, KeyError) as exc:
@@ -159,16 +168,37 @@ class StrategyPage(QWidget):
 
     def loaded(self, rows, error):
         if self.pending is None:
+            if hasattr(rows, "close"):
+                rows.close()
             return
         strategy, self.pending = self.pending, None
         if error:
             self.status.setText(str(error))
             return
+        generation, cancelled = self.generation, self.cancelled
+        spec, options = dict(self.service.specs[strategy["instrument"]]), self.run_options.copy()
+        self.status.setText("正在后台逐根回测…")
+        def work():
+            try:
+                result = run_backtest(rows, strategy, spec, cancelled=lambda: cancelled.is_set() or self.service.closed, **options)
+                result["coverage"]["sources"] = self.cache.coverage(strategy["instrument"], strategy["bar"],
+                    int(rows[0][0]), int(rows[-1][0]))["segments"]
+                return result
+            finally:
+                if hasattr(rows, "close"):
+                    rows.close()
+        def done(result, error):
+            if generation != self.generation:
+                return
+            self.job = None
+            if error:
+                self.status.setText(str(error))
+                return
+            self.show_result(strategy, result)
+        self.job = self.service.compute.submit(work, done)
+
+    def show_result(self, strategy, result):
         try:
-            result = run_backtest(rows, strategy, self.service.specs[strategy["instrument"]],
-                                  initial=self.initial.text(), fee_rate=self.fee.text(), slippage_bps=self.slippage.text())
-            result["coverage"]["sources"] = self.cache.coverage(strategy["instrument"], strategy["bar"],
-                int(rows[0][0]), int(rows[-1][0]))["segments"]
             self.service.store.append("backtest", {"version": 1, "strategy": strategy,
                 "result": result, "coverage": result["coverage"], "assumptions": result["assumptions"]})
             self.equity_curve.set_points(result["equity_curve"])
@@ -189,4 +219,6 @@ class StrategyPage(QWidget):
 
     def shutdown(self):
         self.loader.cancel()
-        self.cache.close()
+        self.pending = None
+        self.generation += 1
+        self.cancelled.set()

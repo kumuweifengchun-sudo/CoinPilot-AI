@@ -1,11 +1,14 @@
 """画布绘制与命中区域；绘制工作量只与可见蜡烛及绘图对象有关。"""
 from datetime import datetime
-from bisect import bisect_left
+from math import ceil
+from bisect import bisect_left, bisect_right
 
-from PyQt6.QtCore import QLineF, QPointF, QRectF, Qt
+from PyQt6.QtCore import QLineF, QPointF, QRect, QRectF, Qt
 from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPainterPathStroker, QPen, QPixmap
 
-from coinpilot_ai.market.intervals import BARS
+from coinpilot_ai.market.intervals import BARS, contiguous
+from coinpilot_ai.market.lod import pixel_buckets
+from coinpilot_ai.market.buffer import ValueView
 from coinpilot_ai.ui.theme import color
 from .position import POSITION_TOOLS, position_metrics
 from .pattern import projected_prices
@@ -236,7 +239,7 @@ class ChartRenderer:
     def layer_key(self):
         return (self.width(), self.height(), self.devicePixelRatioF(), self.font().key(),
                 self._theme_revision, self.bar, self.left_time, self.count,
-                self.low, self.high, self.volume_ratio)
+                self.low, self.high, self.volume_ratio, self.render_interval)
 
     def new_layer(self):
         ratio = self.devicePixelRatioF()
@@ -246,21 +249,52 @@ class ChartRenderer:
         return pixmap
 
     def draw_market_layer(self, painter):
-        key = (self.layer_key(), self._plot_revision, tuple(tuple(e.items()) for e in self.emas))
+        main, volume = self.plot_rects()
+        start, end = self.visible()
+        maximum = max((self.values[i][4] for i in range(start, end)), default=1) or 1
+        layer = self.layer_key()
+        key = (layer, self._plot_revision, tuple(tuple(e.items()) for e in self.emas), maximum)
+        self.draw_axes(painter)
         if key != self._market_key:
-            self._market_layer = self.new_layer()
+            previous = self._market_key
+            delta = 0
+            if previous is not None and previous[1:] == key[1:]:
+                old = previous[0]
+                if (old[6] is not None and layer[6] is not None and
+                        main.width()/self.count*self.render_interval/self.interval >= 1 and
+                        old[:6] == layer[:6] and old[7:] == layer[7:]):
+                    pixels = (old[6]-layer[6])/(self.count*self.interval)*main.width()*self.devicePixelRatioF()
+                    if abs(pixels-round(pixels)) < 1e-6 and 0 < abs(pixels) < main.width()*self.devicePixelRatioF()/2:
+                        delta = round(pixels)
+            clip = None
+            if delta:
+                ratio = self.devicePixelRatioF()
+                region = QRect(round(main.left()*ratio), round(main.top()*ratio),
+                               round(main.width()*ratio), round((volume.bottom()-main.top()+1)*ratio))
+                self._market_layer.scroll(delta, 0, region)
+                width = abs(delta)+ceil(3*ratio)
+                # 暴露条带也对齐设备像素；否则 125%/150% DPI 在接缝留下半透明像素。
+                edge = region.x() if delta > 0 else region.x()+region.width()-width
+                clip = QRectF(edge/ratio, region.y()/ratio, width/ratio, region.height()/ratio)
+                self.market_scrolls = getattr(self, "market_scrolls", 0)+1
+            else:
+                self._market_layer = self.new_layer()
             p = QPainter(self._market_layer)
             p.setFont(self.font())
             p.setRenderHint(QPainter.RenderHint.Antialiasing)
-            self.draw_market(p)
+            if clip is not None:
+                p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+                p.fillRect(clip, Qt.GlobalColor.transparent)
+                p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+                p.setClipRect(clip)
+            self.draw_market(p, clip=clip, maximum=maximum)
             p.end()
             self._market_key = key
             self.market_builds += 1
         painter.drawPixmap(0, 0, self._market_layer)
 
-    def draw_market(self, p):
+    def draw_axes(self, p):
         main, volume = self.plot_rects()
-        start, end = self.visible()
         left, step = self.left_index(), main.width()/self.count
         for i in range(6):
             y = main.top()+main.height()*i/5
@@ -274,7 +308,8 @@ class ChartRenderer:
             index = left+i*self.count/grid_count
             x = main.left()+(index-left)*step
             try:
-                label = datetime.fromtimestamp(self.time_at(index)/1000).strftime("%m-%d %H:%M")
+                format_ = "%H:%M:%S" if self.interval < 60000 else ("%Y-%m-%d" if self.interval >= 86400000 else "%m-%d %H:%M")
+                label = datetime.fromtimestamp(self.time_at(index)/1000).strftime(format_)
             except (ValueError, OSError, OverflowError):
                 label = "—"
             p.setPen(QPen(QColor(color("chart_grid")), .7))
@@ -283,19 +318,37 @@ class ChartRenderer:
             p.drawText(QRectF(x, volume.bottom()+4, 100, 22), Qt.AlignmentFlag.AlignLeft, label)
         p.setPen(QPen(QColor(color("border")), 1))
         p.drawLine(QPointF(main.left(), volume.top()-4), QPointF(main.right(), volume.top()-4))
+    def draw_market(self, p, *, clip=None, maximum=None):
+        main, volume = self.plot_rects()
+        start, end = self.visible()
+        if clip is not None:
+            span = self.count*self.interval
+            first = self.left_time+(clip.left()-main.left())/main.width()*span
+            last = self.left_time+(clip.right()-main.left())/main.width()*span
+            start = max(start, bisect_left(self.times, first)-2)
+            end = min(end, bisect_right(self.times, last)+2)
+        step = main.width()/self.count*self.render_interval/self.interval
         visible = self.values[start:end]
-        max_volume = max((v[4] for v in visible), default=1) or 1
+        max_volume = maximum or max((v[4] for v in visible), default=1) or 1
         sy = main.height()/max(1e-14, self.high-self.low)
         bottom, low = main.bottom(), self.low
-        interval, volume_bottom, volume_height = self.interval, volume.bottom(), volume.height()
+        interval, volume_bottom, volume_height = self.render_interval, volume.bottom(), volume.height()
         ratio = self.devicePixelRatioF()
         body_width = max(1, step*.64)
-        xs = [main.left()+(stamp-self.left_time)/interval*step+step*.5
-              for stamp in self.times[start:end]]
+        source_times = self.times[start:end]
+        xs = [main.left()+(stamp-self.left_time)/interval*step+step*.5 for stamp in source_times]
+        candle_xs = xs
+        if step < 1:
+            grouped = pixel_buckets(self.rows[start:end], self.left_time, self.count*self.interval,
+                                     main.width(), interval, bar=self.render_bar)
+            visible = ValueView(grouped)
+            candle_xs = [main.left()+(stamp-self.left_time)/interval*step+.5 for stamp in grouped.times]
+            max_volume = max((row[5] for row in grouped), default=1) or 1
+        self.rendered_candles = len(candle_xs)
         wicks = [[], []]
         bodies = [[], []]
         volumes = [[], []]
-        for x, (op, high, lo, close, vol) in zip(xs, visible):
+        for x, (op, high, lo, close, vol) in zip(candle_xs, visible):
             side = int(close >= op)
             yo, yc = bottom-(op-low)*sy, bottom-(close-low)*sy
             wicks[side].append(QLineF(x, bottom-(high-low)*sy, x, bottom-(lo-low)*sy))
@@ -311,21 +364,25 @@ class ChartRenderer:
         p.save()
         p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
         for side, token in enumerate(("negative", "positive")):
-            p.setClipRect(main)
+            p.save()
+            p.setClipRect(main, Qt.ClipOperation.IntersectClip)
             shade = QColor(color(token))
             p.setPen(QPen(shade, 1))
             p.drawLines(wicks[side])
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(shade)
             p.drawRects(bodies[side])
-            p.setClipRect(volume)
+            p.restore()
+            p.save()
+            p.setClipRect(volume, Qt.ClipOperation.IntersectClip)
             shade = QColor(color("volume_up" if side else "volume_down"))
             shade.setAlpha(140)
             p.setPen(QPen(shade, 0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.FlatCap))
             p.drawLines(volumes[side])
+            p.restore()
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setBrush(Qt.BrushStyle.NoBrush)
-        p.setClipRect(main)
+        p.setClipRect(main, Qt.ClipOperation.IntersectClip)
         for setting, values in zip(self.emas, self.ema_cache):
             if not setting["visible"]:
                 continue
@@ -337,7 +394,7 @@ class ChartRenderer:
             for offset, x in enumerate(xs):
                 i = start+offset
                 y = bottom-(values[i]-low)*sy
-                if i == start or self.times[i]-self.times[i-1] > interval*1.1:
+                if i == start or not contiguous(self.times[i-1], self.times[i], self.render_bar):
                     path.moveTo(x, y)
                 else:
                     path.lineTo(x, y)
@@ -356,7 +413,7 @@ class ChartRenderer:
                         active = False
                         continue
                     y = bottom-(value-low)*sy
-                    if not active or i == 0 or self.times[i]-self.times[i-1] > interval*1.1:
+                    if not active or i == 0 or not contiguous(self.times[i-1], self.times[i], self.render_bar):
                         path.moveTo(x, y)
                     else:
                         path.lineTo(x, y)
@@ -458,7 +515,7 @@ class ChartRenderer:
             if main.contains(cursor):
                 price = self.snap_target[1] if self.snap_target is not None else self.anchor(cursor)[1]
                 self.price_label(p, price, f"{price:,.7g}", color("border_strong"))
-            date = datetime.fromtimestamp(self.times[hovered]/1000).strftime("%Y-%m-%d %H:%M")
+            date = datetime.fromtimestamp(self.times[hovered]/1000).strftime("%Y-%m-%d %H:%M:%S" if self.interval < 60000 else "%Y-%m-%d %H:%M")
             x = max(main.left(), min(x-62, main.right()-136))
             p.fillRect(QRectF(x, volume.bottom()+1, 136, 24), QColor(color("surface_selected")))
             p.setPen(QColor(color("text")))

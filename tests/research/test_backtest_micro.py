@@ -46,3 +46,45 @@ def test_book_sequence_gap_and_trade_profile():
     assert not tape.direction_available
     profile = volume_profile(tape.trades, "1")
     assert (profile["poc"], profile["val"], profile["vah"]) == (Decimal("101"), Decimal("101"), Decimal("102"))
+
+
+@pytest.mark.parametrize("kind", ["MA", "EMA", "BOLL", "MACD", "RSI", "ATR", "STOCHASTIC", "VWAP", "SUPERTREND", "VOLUME_MA"])
+def test_streaming_backtest_matches_batch_indicator_oracle(kind, monkeypatch):
+    import math
+    from types import SimpleNamespace
+    from coinpilot_ai.research import backtest
+    from coinpilot_ai.market.indicators import calculate
+    rows = [(900000*(i+1), 100+math.sin(i/8), 104., 96., 100+math.sin(i/8), 10., 0., 0., 1) for i in range(160)]
+    strategy = {"bar": "15m", "direction": "long", "stop_percent": "1", "target_percent": "1",
+                "risk_percent": "1", "conditions": [{"metric": "indicator", "indicator": {"kind": kind},
+                                                       "op": "above", "threshold": "50"}]}
+    spec = {"ctType": "linear", "settleCcy": "USDT", "ctVal": "1", "lotSz": "1", "minSz": "1"}
+    actual = run_backtest(rows, strategy, spec)
+    class BatchOracle:
+        def __init__(self, spec, bar):
+            self.spec, self.bar, self.rows = spec, bar, []
+            self.state = SimpleNamespace(result=None)
+        def push(self, row):
+            self.rows.append(row)
+            self.state.result = calculate(self.rows, self.spec, bar=self.bar)
+    monkeypatch.setattr(backtest, "IndicatorStream", BatchOracle)
+    assert actual == run_backtest(rows, strategy, spec)
+
+
+def test_backtest_pages_history_and_limits_curve(tmp_path):
+    from coinpilot_ai.market.history import HistoryData
+    rows = HistoryData.create(((60000*(i+1), 100., 101., 99., 100., 10., 0., 0., 1) for i in range(12000)), 60000)
+    strategy = {"bar": "1m", "direction": "long", "stop_percent": "1", "target_percent": "1",
+                "risk_percent": "1", "conditions": [{"metric": "indicator", "indicator": {"kind": "MA"},
+                                                       "op": "above", "threshold": "1000"}]}
+    spec = {"ctType": "linear", "settleCcy": "USDT", "ctVal": "1", "lotSz": "1", "minSz": "1"}
+    try:
+        result = run_backtest(rows, strategy, spec)
+        assert result["coverage"]["bars"] == 12000
+        assert len(result["equity_curve"]) <= 4096
+        assert result["equity_curve"][-1]["time"] == rows[-1][0]
+        assert len(rows.pages) <= 2
+        with pytest.raises(ValueError, match="取消"):
+            run_backtest(rows, strategy, spec, cancelled=lambda: True)
+    finally:
+        rows.close()

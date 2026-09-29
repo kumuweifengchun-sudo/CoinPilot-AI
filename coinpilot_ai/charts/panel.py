@@ -13,7 +13,8 @@ from .settings import IndicatorSettingsDialog
 from .indicator_strip import IndicatorStrip
 from .derivative_strip import DerivativeStrip
 from .instrument_selector import InstrumentSelector
-from coinpilot_ai.market.intervals import BARS
+from coinpilot_ai.market.intervals import BARS, QUICK_BARS
+from coinpilot_ai.market.lod import display_bar
 from coinpilot_ai.charts.state import TOOLS, trade_lines, normalize_indicators
 from coinpilot_ai.charts.position import POSITION_TOOLS, position_metrics, position_summary
 from coinpilot_ai.trading.models import instrument_id
@@ -67,6 +68,8 @@ class ChartPanel(QWidget):
         self.service, self.trading = service, trading
         self.local_pair = local_pair
         self.local_key = local_key
+        self.view_owner = object()
+        self.destroyed.connect(lambda _, f=service.chart_feed, o=self.view_owner: f.set_view(o))
         self.indicator_book = service.chart_book
         self.maximized = False
         self.warm_pending = False
@@ -92,15 +95,29 @@ class ChartPanel(QWidget):
         controls = QHBoxLayout()
         controls.setSpacing(2)
         self.period_buttons = {}
-        for bar in BARS:
+        for bar in QUICK_BARS:
             btn = self.small_button(bar, lambda _, b=bar: self.select_bar(b))
             btn.setCheckable(True)
             self.period_buttons[bar] = btn
             controls.addWidget(btn)
+        self.period_menu_button = self.small_button("更多周期", lambda: None)
+        period_menu = QMenu(self)
+        self.period_actions = {}
+        for title, names in (("秒 / 分钟 / 小时", [b for b in BARS if BARS[b] < 21600]),
+                             ("UTC+8 开盘", [b for b in BARS if BARS[b] >= 21600 and not b.endswith("utc")]),
+                             ("UTC+0 开盘", [b for b in BARS if b.endswith("utc")])):
+            menu = period_menu.addMenu(title)
+            for bar in names:
+                action = menu.addAction(bar, lambda checked=False, b=bar: self.select_bar(b))
+                action.setCheckable(True)
+                self.period_actions[bar] = action
+        self.period_menu_button.setMenu(period_menu)
+        controls.addWidget(self.period_menu_button)
         self.compact_bar = QComboBox()
         for bar in BARS:
             self.compact_bar.addItem(bar.replace('m', 'min'), bar)
         self.compact_bar.setAccessibleName('K 线周期')
+        self.compact_bar.setToolTip('完整 OKX 周期；utc 后缀表示 UTC+0 开盘，6H 及以上无后缀表示 UTC+8 开盘；1s 历史仅限最近三个月')
         self.compact_bar.setMinimumContentsLength(5)
         self.compact_bar.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         self.compact_bar.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
@@ -110,6 +127,7 @@ class ChartPanel(QWidget):
         controls.addStretch()
         self.compact_hidden = []
         tools_menu = QMenu(self)
+        tools_menu.setObjectName("chartDrawingTools")
         for key, name in TOOLS.items():
             action = tools_menu.addAction(name, lambda checked=False, k=key: self.choose_tool(k))
             action.setIcon(icon(key))
@@ -251,6 +269,7 @@ class ChartPanel(QWidget):
         self.setStyleSheet(chart_controls_style())
         events.changed.connect(self.apply_theme)
         service.chart_feed.series_changed.connect(self.series_changed)
+        service.chart_feed.indicators_changed.connect(self.indicators_ready)
         service.updated.connect(self.refresh)
         service.chart_book.changed.connect(self.settings_changed)
         service.derivatives.changed.connect(self.derivatives_changed)
@@ -311,6 +330,7 @@ class ChartPanel(QWidget):
         if pair == self.local_pair:
             return
         self.canvas.flush_view()
+        self.service.chart_feed.set_view(self.view_owner)
         self.local_pair = pair
         self.symbol_choice.set_instrument(instrument)
         self.refresh("selection")
@@ -319,6 +339,7 @@ class ChartPanel(QWidget):
     def set_compact(self, compact):
         self.compact = compact
         self.compact_bar.setVisible(compact)
+        self.period_menu_button.setVisible(not compact)
         self.compact_bar.setCurrentIndex(max(0, self.compact_bar.findData(self.bar)))
         for button in self.period_buttons.values():
             button.setVisible(not compact)
@@ -393,9 +414,27 @@ class ChartPanel(QWidget):
                 return
             self.service.chart_feed.fetch(*pair, older=True)
 
+    @property
+    def display_pair(self):
+        bar = display_bar(self.bar, self.canvas.count, self.canvas.plot_rects()[0].width())
+        return self.instrument, bar
+
     def ensure_view(self):
-        if self.isVisible() and self.service.running and not self.service.closed and not self.canvas.follow:
-            self.service.chart_feed.ensure_range((self.canvas.instrument, self.canvas.bar), self.canvas.left_time, self.canvas.count)
+        if self.canvas.follow and self.display_pair == self.pair:
+            self.service.chart_feed.set_view(self.view_owner)
+        if not self.isVisible() or not self.service.running or self.service.closed:
+            return
+        pair = self.display_pair
+        if pair != self.pair:
+            self.service.chart_feed.ensure_display(self.view_owner, self.instrument, self.bar, pair[1],
+                                                  self.canvas.left_time, self.canvas.count)
+        elif self.canvas.follow:
+            self.service.chart_feed.set_view(self.view_owner)
+        else:
+            self.service.chart_feed.ensure_range(pair, self.canvas.left_time, self.canvas.count, owner=self.view_owner)
+        series = self.service.chart_feed.get_series(pair)
+        if self.canvas._series is not series:
+            self.canvas.bind_series(series)
 
     def schedule_range(self):
         if self.isVisible():
@@ -439,8 +478,17 @@ class ChartPanel(QWidget):
     def set_data(self, rows, title=None):
         self.canvas.set_data(rows)
 
+    def indicators_ready(self, pair):
+        if self.isVisible() and pair[0] == self.instrument:
+            self.canvas.calculate_indicators()
+            self.canvas._plot_revision += 1
+            self.canvas.update()
+            self.update_indicator_strips()
+
     def series_changed(self, change):
-        if change.pair != self.pair:
+        if change.pair == self.pair and self.display_pair != self.pair:
+            self.schedule_range()
+        if change.pair != self.display_pair:
             if (change.pair[0] == self.instrument and
                     any(item.get("bar", "chart") == change.pair[1]
                         for item in self.indicator_book.indicators if item.get("visible", True))):
@@ -473,13 +521,17 @@ class ChartPanel(QWidget):
             self.canvas.set_context(s.environment, self.instrument, self.bar)
             for bar, btn in self.period_buttons.items():
                 btn.setChecked(bar == self.bar)
+            for bar, action in self.period_actions.items():
+                action.setChecked(bar == self.bar)
+            self.period_menu_button.setText(self.bar if self.bar not in QUICK_BARS else "更多周期")
             self.compact_bar.setCurrentIndex(max(0, self.compact_bar.findData(self.bar)))
             self.tool_buttons["cursor"].setChecked(True)
             self.canvas.tool = "cursor"
+            s.chart_feed.set_view(self.view_owner)
         if kind == "candles":
             # 保留直接注入离线数据的兼容入口；正常推送由带版本的通知驱动。
             if self.isVisible():
-                series = s.chart_feed.get_series(self.pair)
+                series = s.chart_feed.get_series(self.display_pair)
                 if self.canvas._series is not series or self.canvas._series_revision != series.revision:
                     self.queue_refresh("series")
             self.queue_refresh("chart_status")
@@ -495,7 +547,7 @@ class ChartPanel(QWidget):
         change, self.pending_change = self.pending_change, None
         all_state = bool(kinds & {"selection", "environment", "show"})
         if all_state or "series" in kinds:
-            self.canvas.bind_series(s.chart_feed.get_series(self.pair), None if all_state else change)
+            self.canvas.bind_series(s.chart_feed.get_series(self.display_pair), None if all_state else change)
             self.update_indicator_strips()
             self.maybe_warm()
             if not self.range_timer.isActive():
@@ -518,7 +570,9 @@ class ChartPanel(QWidget):
             self.canvas.update()
 
     def update_status(self):
-        status = "OKX · " + self.service.chart_feed.text(self.pair)
+        status = "OKX · " + self.service.chart_feed.text(self.display_pair)
+        if self.display_pair != self.pair:
+            status += f" · 显示 {self.display_pair[1]}，指标按显示周期计算"
         full = status
         selected = self.canvas.selected()
         if selected and selected['tool'] in POSITION_TOOLS and not selected.get('hidden'):
@@ -540,6 +594,7 @@ class ChartPanel(QWidget):
         self.flush_refresh()
 
     def hideEvent(self, event):
+        self.service.chart_feed.set_view(self.view_owner)
         self.refresh_timer.stop()
         self.range_timer.stop()
         super().hideEvent(event)

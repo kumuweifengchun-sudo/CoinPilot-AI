@@ -4,6 +4,7 @@ from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import QWidget
 
 from coinpilot_ai.ui.theme import color
+from coinpilot_ai.market.intervals import contiguous
 
 
 class IndicatorStrip(QWidget):
@@ -45,9 +46,9 @@ class IndicatorStrip(QWidget):
                 if value is None:
                     active = False
                     continue
-                x = left + (self.canvas.times[i]-self.canvas.left_time)/self.canvas.interval / self.canvas.count * (right-left)
+                x = left + (self.canvas.times[i]-self.canvas.left_time+self.canvas.render_interval/2)/self.canvas.interval / self.canvas.count * (right-left)
                 y = bottom - (value-minimum)/(maximum-minimum)*(bottom-top)
-                if not active or i == 0 or self.canvas.times[i]-self.canvas.times[i-1] > self.canvas.interval*1.1:
+                if not active or i == 0 or not contiguous(self.canvas.times[i-1], self.canvas.times[i], self.canvas.render_bar):
                     path.moveTo(QPointF(x, y))
                 else:
                     path.lineTo(QPointF(x, y))
