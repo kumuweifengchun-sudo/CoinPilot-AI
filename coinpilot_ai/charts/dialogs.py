@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QColorDialog, QComboB
 
 from coinpilot_ai.market.intervals import BARS
 from coinpilot_ai.charts.state import OBJECT_NAMES, DEFAULT_EMAS, validate_emas
-from coinpilot_ai.charts.position import POSITION_TOOLS, position_metrics
+from coinpilot_ai.charts.position import POSITION_TOOLS, position_metrics, position_price, position_value, PositionInputError
 from coinpilot_ai.charts.pattern import MAX_PATTERN_POINTS, projected_prices
 from coinpilot_ai.ui.common import button
 from coinpilot_ai.ui.theme import color as theme_color
@@ -142,8 +142,9 @@ class EmaDialog(QDialog):
 
 
 class DrawingDialog(QDialog):
-    def __init__(self, obj, parent=None):
+    def __init__(self, obj, parent=None, *, tick_size=None):
         super().__init__(parent)
+        self.tick_size = tick_size
         self.result_object = deepcopy(obj)
         self.setWindowTitle((obj.get('name') or OBJECT_NAMES[obj['tool']]) + ' · 属性')
         self.resize(520, 380 if obj["tool"] != "fib" else 620)
@@ -186,12 +187,16 @@ class DrawingDialog(QDialog):
         self.notional = None
         if obj['tool'] in POSITION_TOOLS:
             for index, title in enumerate(('入场价', '止盈价', '止损价')):
-                field = QLineEdit(f"{obj['anchors'][index][1]:.12g}")
+                field = QLineEdit(position_price(obj['anchors'][index][1], tick_size))
+                field.setAccessibleName(title)
+                if tick_size:
+                    field.setToolTip(f'按合约最小价格变动单位 {tick_size} 对齐')
                 self.position_fields[title] = field
                 form.addRow(title, field)
             self.notional = QLineEdit(str(obj.get('notional_usdt', '')))
-            self.notional.setPlaceholderText('仓位名义价值，单位 USDT')
-            form.addRow('仓位金额 USDT', self.notional)
+            self.notional.setPlaceholderText('必填：大于 0 的仓位名义价值，单位 USDT')
+            self.notional.setAccessibleName('仓位金额')
+            form.addRow('仓位金额 USDT（必填）', self.notional)
         else:
             for i, (stamp, price) in enumerate(obj["anchors"]):
                 row = QHBoxLayout()
@@ -262,6 +267,7 @@ class DrawingDialog(QDialog):
         self.levels.setRowHeight(row, 34)
 
     def accept(self):
+        self.error.clear()
         try:
             name = self.name.text().strip()
             if not name:
@@ -271,7 +277,9 @@ class DrawingDialog(QDialog):
                 for index, title in enumerate(('入场价', '止盈价', '止损价')):
                     stamp, price = self.result_object['anchors'][index]
                     field = self.position_fields[title]
-                    anchors.append([stamp, price if field.text() == f'{price:.12g}' else float(field.text())])
+                    value = position_value(field.text(), title)
+                    value = position_value(position_price(value, self.tick_size), title)
+                    anchors.append([stamp, float(value)])
                 candidate = dict(self.result_object, anchors=anchors,
                                  notional_usdt=self.notional.text().strip())
                 if not (self.result_object['locked'] and self.locked.isChecked()):
@@ -316,6 +324,11 @@ class DrawingDialog(QDialog):
             self.result_object['name'] = name
         except (ValueError, AttributeError) as exc:
             self.error.setText(str(exc) or "请检查锚点及比例")
+            if isinstance(exc, PositionInputError):
+                field = self.notional if exc.field == '仓位金额' else self.position_fields.get(exc.field)
+                if field is not None:
+                    field.setFocus()
+                    field.selectAll()
             return
         super().accept()
 
@@ -414,7 +427,8 @@ class ObjectsDialog(QDialog):
 def edit_drawing(chart, identity, parent):
     obj = next((o for o in chart.objects if o["id"] == identity), None)
     if obj:
-        dialog = DrawingDialog(obj, parent)
+        spec = chart.service.specs.get(chart.instrument, {}) if chart.service else {}
+        dialog = DrawingDialog(obj, parent, tick_size=spec.get('tickSz'))
         if dialog.exec() == QDialog.DialogCode.Accepted:
             chart.objects = [dialog.result_object if o["id"] == identity else o for o in chart.objects]
             chart.persist_objects()

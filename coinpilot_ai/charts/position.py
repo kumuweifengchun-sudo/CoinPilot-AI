@@ -1,20 +1,47 @@
 """图表多空测算；金额为入场时的仓位名义价值，不关联订单。"""
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 
 POSITION_TOOLS = {"long_position": "开多", "short_position": "开空"}
 
 
+class PositionInputError(ValueError):
+    def __init__(self, field, message):
+        super().__init__(message)
+        self.field = field
+
+
+def position_value(value, field):
+    text = str(value).strip()
+    if not text:
+        raise PositionInputError(field, f"请填写{field}")
+    try:
+        result = Decimal(text)
+    except InvalidOperation:
+        raise PositionInputError(field, f"{field}必须是有效数字") from None
+    if not result.is_finite() or result <= 0:
+        raise PositionInputError(field, f"{field}必须是大于 0 的有限数字")
+    return result
+
+
+def position_price(value, tick_size=None):
+    """按合约报价步长四舍五入；规格未就绪时不猜测价格精度。"""
+    price = Decimal(str(value))
+    try:
+        tick = Decimal(str(tick_size))
+    except InvalidOperation:
+        tick = None
+    if tick is not None and tick.is_finite() and tick > 0 and price.is_finite():
+        price = (price/tick).to_integral_value(rounding=ROUND_HALF_UP)*tick
+    return format(price, 'f')
+
+
 def position_metrics(obj):
     if obj.get("tool") not in POSITION_TOOLS or len(obj.get("anchors", [])) != 3:
         raise ValueError("多空图形缺少价格")
-    try:
-        entry, target, stop = (Decimal(str(anchor[1])) for anchor in obj["anchors"])
-        notional = Decimal(str(obj.get("notional_usdt", "")))
-    except (InvalidOperation, TypeError, ValueError):
-        raise ValueError("请输入有效的入场价、止盈价、止损价和仓位金额") from None
-    if not all(value.is_finite() and value > 0 for value in (entry, target, stop, notional)):
-        raise ValueError("价格和仓位金额必须为正数")
+    entry, target, stop = (position_value(anchor[1], field) for anchor, field in
+                          zip(obj["anchors"], ("入场价", "止盈价", "止损价")))
+    notional = position_value(obj.get("notional_usdt", ""), "仓位金额")
     if obj["tool"] == "long_position":
         valid = target > entry > stop
     else:

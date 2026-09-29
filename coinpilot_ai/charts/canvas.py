@@ -12,7 +12,7 @@ from coinpilot_ai.market.intervals import BARS, shift
 from coinpilot_ai.market.lod import MAX_VIEW_BARS
 from coinpilot_ai.market.buffer import CandleBuffer, ValueView
 from coinpilot_ai.charts.state import default_emas, drawing, ema_values, name_drawings
-from coinpilot_ai.charts.position import POSITION_TOOLS, position_metrics
+from coinpilot_ai.charts.position import POSITION_TOOLS, position_metrics, position_price
 from coinpilot_ai.charts.pattern import capture_pattern, projected_prices
 from .render import ChartRenderer
 from .regions import enclosed_region
@@ -635,7 +635,8 @@ class CandleChart(ChartRenderer, QWidget):
                 obj = self.preview
                 self.preview = None
                 self.position_stage = 0
-                dialog = DrawingDialog(obj, self)
+                spec = self.service.specs.get(self.instrument, {}) if self.service else {}
+                dialog = DrawingDialog(obj, self, tick_size=spec.get('tickSz'))
                 if dialog.exec() == dialog.DialogCode.Accepted:
                     self.objects.append(dialog.result_object)
                     self.selected_id = obj['id']
@@ -745,6 +746,9 @@ class CandleChart(ChartRenderer, QWidget):
                 obj = self.selected()
                 if obj and obj['tool'] in POSITION_TOOLS:
                     try:
+                        spec = self.service.specs.get(self.instrument, {}) if self.service else {}
+                        for anchor in obj['anchors']:
+                            anchor[1] = float(position_price(anchor[1], spec.get('tickSz')))
                         position_metrics(obj)
                     except ValueError:
                         obj.update(deepcopy(self.drag['before']))
