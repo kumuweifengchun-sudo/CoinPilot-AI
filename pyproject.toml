@@ -10,7 +10,10 @@ dependencies = ["PyQt6>=6.8,<7"]
 Repository = "https://github.com/kumuweifengchun-sudo/CoinPilot-AI"
 
 [dependency-groups]
-dev = ["pytest>=8,<10"]
+dev = [
+    "basedpyright>=1.40,<2",
+    "pytest>=8,<10",
+]
 build = ["pyinstaller>=6.11,<7"]
 
 [tool.uv]
@@ -19,6 +22,18 @@ default-groups = []
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.pyright]
+include = ["coinpilot_ai", "coinpilot-ai.py", "tests", "scripts", "typings"]
+typeCheckingMode = "standard"
+reportMissingTypeArgument = "error"
+reportUnnecessaryTypeIgnoreComment = "error"
+stubPath = "typings"
+extraPaths = ["tests/desktop", "tests/market"]
+pythonVersion = "3.13"
+pythonPlatform = "Windows"
+venvPath = "."
+venv = ".venv"
 
 [[tool.uv.index]]
 url="https://mirrors.cloud.tencent.com/pypi/simple/"

@@ -5,7 +5,7 @@ import sys
 import tomllib
 
 
-_ROOT = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[2]
+_ROOT = Path(getattr(sys, "_MEIPASS")) if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[2]
 VERSION = tomllib.loads((_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
 if not re.fullmatch(r"\d+\.\d+\.\d+(?:\.\d+)?", VERSION):
     raise ValueError("版本号必须包含三或四段数字")

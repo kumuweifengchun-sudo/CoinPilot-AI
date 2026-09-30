@@ -1,18 +1,10 @@
-# CoinPilot AI 开发协作约定
+# 开发细则
 
-本文件供参与项目开发的 AI 助手与维护者阅读。开始修改前先阅读 [README.md](README.md)，再检查相关实现、测试与工作区状态。文档中的功能说明必须与当前源码一致。
+本文件保留模块行为、兼容性及验收要求，作为根目录 [AGENTS.md](../AGENTS.md) 的补充。修改相关模块前，按任务范围阅读对应章节。通用操作边界、类型检查入口和 Git 提交规范以根文件为准。
 
-## 协作与修改范围
+所有命令从仓库根目录执行；模块路径除特别说明外，相对于 `coinpilot_ai/`。产品说明见 [README.md](../README.md)，依赖及版本以 `pyproject.toml` 和 `uv.lock` 为准。
 
-- 默认使用中文沟通，先说明修改目的，完成后说明实际变更、验证结果及未验证部分。
-- **除非用户明确说明可以使用浏览器，否则不得启动或使用浏览器工具和插件。**
-- 仅在用户或适用指令明确要求子代理、委派或并行代理工作时使用子代理。
-- 修改前执行 `git status --short`，保留已有暂存、未暂存和未跟踪变更。不得擅自回滚、清理或覆盖用户工作。
-- 优先使用 `rg`、`rg --files` 定位代码；以工作区实际文件为准，不照搬已删除目录或旧文档中的路径。
-- 将改动限定在任务范围内。纯文档修改不调整业务逻辑、依赖或版本，也不默认重新打包。
-- 不读取、打印或传播真实凭据和账户资料；不把测试通过描述成线上服务或真实账户已经验收。
-
-## 技术栈与代码导航
+## 模块导航
 
 项目面向 Windows 10/11，使用 Python 3.13、PyQt6、SQLite 和 uv。版本及依赖源见 `pyproject.toml`，锁定结果见 `uv.lock`。
 
@@ -36,6 +28,20 @@
 测试按功能放在 `tests/<模块>/`，跨模块用例在 `tests/integration/`。开发脚本位于 `scripts/`，Windows 构建文件位于 `packaging/windows/`。不要重新引入旧的 `cockpit/`、根目录构建配置或 `tools/` 路径。
 
 ## 实现约定
+
+
+### 类型定义与对象结构
+
+- 新增或修改跨模块接口、公共函数及构造函数时，明确参数与返回类型。初始值为 `None`、空集合或存在多种实现的成员，显式声明可空类型、集合元素类型或联合类型，避免由初始值推导出过窄类型。使用 `list[Drawing]`、`dict[str, float]` 等完整泛型，不新增裸 `list`、`dict`、`tuple` 声明。
+- 固定字段记录使用 `dataclass` 或 `TypedDict`；真正可缺失的字段使用 `NotRequired`，读取前检查存在性。不同状态具有不同字段时，使用 `Literal` 判别字段与联合类型，在分支收窄后访问专属字段。复用现有 `CandleRow`、`Drawing`、`DragState` 等契约，不在调用端各自猜测结构。
+- JSON、数据库和网络响应在输入边界检查形状、必需字段及数值范围，再转换为业务对象。`Any` 仅用于确实尚未校验的外部数据边界，不能扩散到业务接口；`cast()` 不能代替运行时校验，也不能把实际整数、列表等伪装成其他类型以消除诊断。
+- 可空对象先用局部变量和 `is None` / `isinstance` 分支处理。Qt 保证存在且缺失代表程序错误的对象可用 `ui/qt.py` 的 `require()`；合法的缺失状态必须走正常分支，不能通过断言、默认零或空对象掩盖。需要 `QApplication` 时使用 `application()` 收窄单例类型。
+- Qt 子类新增成员前检查父类接口，不能用业务属性或方法覆盖 `width`、`style`、`result`、`x`、`y`、`size`、`instance`、`disconnect` 等已有接口。采用 `line_width`、`panel_count`、`time_x`、`close_socket` 等体现业务含义的名称。
+- 有意重写父类方法时，对齐参数名称、可空性、返回类型和重载，新增或修改的重写优先使用 `typing.override` 标记。类型声明与运行时调用都应兼容；尤其不要仅凭 PyQt 的声明推断原生接口支持关键字参数。
+- 支持整数与切片的容器分别声明 `@overload`，返回类型与真实行为一致。允许注入函数的工厂使用 `Callable`，共享结构接口使用 `Protocol`，不要将回调错误标注为只能传入类的 `type[...]`。
+- 测试替身、回调和猴子补丁遵守被替换接口的签名，显式声明测试需要的成员。不要给生产对象临时附加未声明的测试属性；使用测试子类或独立替身。涉及 Qt 原有接口、容器行为及状态转换的修复，添加对应行为回归用例。
+- 保持 `pyproject.toml` 的 `standard` 检查及源码、测试、脚本的覆盖范围。不得通过降级规则、排除报错文件、整文件忽略或扩大 `Any` 规避诊断。新类型模块及本地声明补充也要纳入检查。
+- 第三方声明确有差异时，先核对安装包声明与运行时行为，再修正 `typings/` 或使用最小范围的 `pyright: ignore[具体规则]`，邻近注释必须说明原因，并以行为测试验证。升级依赖时复核现有兼容处理；无效忽略由 `reportUnnecessaryTypeIgnoreComment` 拦截。检查通过只说明已启用规则未发现问题，不能代替运行时验证。
 
 ### 服务、桌面与生命周期
 
@@ -87,14 +93,7 @@
 - 使用 `core/paths.py` 的 `resource_path()` 定位源码和 EXE 资源；新增资源同时核对 PyInstaller 收集规则。
 - 优先复用 `ui/` 的主题、字体、图标及控件。保留本地图标与字体的许可声明。
 
-## 开发与验证
-
-在项目根目录使用 PowerShell：
-
-```powershell
-uv sync --locked --group dev
-uv run --locked --group dev pytest -q
-```
+## 专项验证
 
 按修改范围先执行相关验证：
 
@@ -126,6 +125,7 @@ uv run --locked python scripts/qa/verify_updates.py
 
 ## 构建与发行
 
+
 ```powershell
 .\scripts\release\build_installer.ps1 -IsccPath "D:\Inno Setup 6\ISCC.exe"
 
@@ -136,24 +136,6 @@ uv run --locked python scripts/qa/smoke_test.py
 - 构建要求 64 位 Python 3.13、uv 与 Inno Setup 6.5+ 的 6.x 编译器，版本来源为 `pyproject.toml`。
 - PyInstaller 配置为 `packaging/windows/coinpilot-ai.spec`。保留 DLL 隔离、中文翻译、字体、图标、许可证及 PerMonitorV2 清单。
 - 对外发布 `dist/installer/CoinPilotAI-Setup-<版本>-x64.exe` 及同名 `.sha256` 文件；`dist/coinpilot-ai/` 为整体使用的目录版，不发布孤立 EXE。
-- 启动检查需要已有 EXE，可能访问公开行情；安装、升级与卸载须按 [安装验收清单](packaging/windows/installer/VALIDATION.md) 在独立 Windows 用户或虚拟机验证。
+- 启动检查需要已有 EXE，可能访问公开行情；安装、升级与卸载须按 [安装验收清单](../packaging/windows/installer/VALIDATION.md) 在独立 Windows 用户或虚拟机验证。
 - 依赖变更通过 uv 完成，并同步 `pyproject.toml` 与 `uv.lock`。新增运行、测试、构建依赖分别使用 `uv add`、`uv add --group dev`、`uv add --group build`。
 - 只报告实际完成的验证，不将构建成功等同于完整安装验收。
-
-## Git 提交规范
-
-提交记录必须使用中文、分条描述，每条明确标注变更类型，仅允许：
-
-- **新增**：新增功能、文件、配置或逻辑。
-- **修改**：修改、优化、重构或修复现有内容。
-- **删除**：删除功能、文件、配置或无用代码。
-
-每条说明应简洁、具体，禁止使用“更新代码”“修改内容”“优化项目”等笼统描述。示例：
-
-```text
-- 新增：历史回放训练进度保存功能
-- 修改：修正多图切换后的视口恢复逻辑
-- 删除：迁移后不再使用的旧构建入口
-```
-
-仅暂存本次任务涉及的文件，不夹带已有用户变更。不提交 `.venv/`、`build/`、`dist/`、`artifacts/`、凭据或用户数据库。新增文档图片前确认文件存在且会随仓库分发；忽略规则以实际 `.gitignore` 为准。

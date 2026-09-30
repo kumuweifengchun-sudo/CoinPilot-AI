@@ -1,13 +1,55 @@
 """图表的持久化状态。锚点保存交易所毫秒时间与价格，不保存屏幕像素。"""
 from copy import deepcopy
-from coinpilot_ai.ui.theme import color as theme_color
 import math
 import uuid
+from typing import NotRequired, TypedDict
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from coinpilot_ai.market.intervals import BARS
+from coinpilot_ai.ui.theme import color as theme_color
 from .position import POSITION_TOOLS
+
+
+class IndicatorSetting(TypedDict):
+    id: str
+    kind: str
+    params: dict[str, int | float]
+    bar: str
+    color: str
+    width: float
+    visible: bool
+
+
+class FibLevel(TypedDict):
+    value: float
+    label: str
+    color: str
+
+
+class Drawing(TypedDict):
+    id: str
+    tool: str
+    anchors: list[list[float]]
+    text: str
+    name: NotRequired[str]
+    color: str
+    width: float
+    style: str
+    locked: bool
+    hidden: bool
+    bars: list[str]
+    levels: list[FibLevel]
+    fill_color: NotRequired[str]
+    fill_opacity: NotRequired[float]
+    opacity: NotRequired[int]
+    source_start: NotRequired[int]
+    source_end: NotRequired[int]
+    interval: NotRequired[float]
+    closes: NotRequired[list[float]]
+    notional_usdt: NotRequired[str]
+
+
 TOOLS = {"cursor": "光标", "trend": "趋势线", "horizontal": "水平线", "ray": "射线",
          "vertical": "竖线", "rectangle": "矩形", "text": "文字", "fib": "斐波拉契", "measure": "测距",
          "price_pattern": "复制走势",
@@ -22,7 +64,7 @@ DEFAULT_EMAS = default_emas()
 FIB_LEVELS = [0, .236, .382, .5, .618, .786, 1]
 
 
-def drawing(tool, anchors, text=""):
+def drawing(tool, anchors, text="") -> Drawing:
     return {"id": uuid.uuid4().hex, "tool": tool, "anchors": deepcopy(anchors), "text": text,
             "color": theme_color("focus"), "width": 1.5, "style": "solid", "locked": False, "hidden": False,
             "bars": list(BARS), "levels": [{"value": n, "label": f"{n:g}", "color": theme_color("focus")} for n in FIB_LEVELS]}
@@ -110,7 +152,7 @@ class ChartBook(QObject):
             self.store.put("chart_settings", "magnet", enabled)
             self.changed.emit("magnet", None)
 
-    def objects(self, environment, instrument):
+    def objects(self, environment, instrument) -> list[Drawing]:
         key = (environment, instrument)
         if key not in self.cache:
             objects = self.store.get("chart_drawings", instrument, [], environment)

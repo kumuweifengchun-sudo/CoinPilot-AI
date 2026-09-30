@@ -37,9 +37,9 @@ class RiskDialog(QDialog):
             form.addRow(label, field)
         form.addRow("方向", self.direction)
         layout.addLayout(form)
-        self.result = QLabel("填写计划价格后计算。手续费与滑点未包含在风险预算内。")
-        self.result.setWordWrap(True)
-        layout.addWidget(self.result)
+        self.result_label = QLabel("填写计划价格后计算。手续费与滑点未包含在风险预算内。")
+        self.result_label.setWordWrap(True)
+        layout.addWidget(self.result_label)
         self.plan = None
         layout.addWidget(button("计算仓位", self.calculate))
         self.use_button = button("填入本地模拟订单草稿", self.use_plan)
@@ -52,7 +52,7 @@ class RiskDialog(QDialog):
             self.plan = position_plan(**values, direction=self.direction.currentData(),
                                       spec=self.service.specs[self.instrument])
             plan = self.plan
-            self.result.setText(f"最大风险 {plan['risk_budget']:,.4f} USDT · 止损距离 {plan['stop_percent']:.2f}%\n"
+            self.result_label.setText(f"最大风险 {plan['risk_budget']:,.4f} USDT · 止损距离 {plan['stop_percent']:.2f}%\n"
                                 f"建议 {plan['contracts']} 张 · 名义仓位 {plan['notional']:,.4f} USDT\n"
                                 f"按计划价格亏损 {plan['planned_loss']:,.4f} USDT"
                                 + (f" · 盈亏比 1:{plan['risk_reward']:.2f}" if plan['risk_reward'] is not None else "")
@@ -61,7 +61,7 @@ class RiskDialog(QDialog):
         except (ValueError, KeyError) as exc:
             self.plan = None
             self.use_button.setEnabled(False)
-            self.result.setText(str(exc))
+            self.result_label.setText(str(exc))
 
     def use_plan(self):
         if self.plan and self.service.environment == "paper":
@@ -441,15 +441,15 @@ class TradeController(QObject):
             self.refresh_leverage()
         if kind in ("account", "orders", "environment") and self.bottom.isVisible():
             fill_table(self.position_table, [(p.get("posId"), [p["instId"],
-                ('多' if p['posSide'] == 'long' or p['posSide'] == 'net' and number(p['pos']) > 0 else '空') + ' / ' + {'cross': '全仓', 'isolated': '逐仓'}.get(p['mgnMode'], p['mgnMode']),
+                ('多' if p['posSide'] == 'long' or p['posSide'] == 'net' and number(p['pos']) > 0 else '空') + ' / ' + ({'cross': '全仓', 'isolated': '逐仓'}.get(p['mgnMode'], p['mgnMode']) or ''),
                 str(abs(number(p['pos'])))+" / "+(p.get("availPos") or str(abs(number(p['pos'])))), p.get("avgPx"), p.get("upl"), p.get("lever")]) for p in s.positions])
-            fill_table(self.order_table, [(o["ordId"], [o["instId"], {'buy': '买', 'sell': '卖'}.get(o.get('side'), '')+" / "+{'market': '市价', 'limit': '限价'}.get(o.get('ordType'), o.get('ordType', '')), o.get("sz"), o.get("px"), STATES.get(o.get("state"), o.get("state"))]) for o in s.pending_orders])
+            fill_table(self.order_table, [(o["ordId"], [o["instId"], {'buy': '买', 'sell': '卖'}.get(o.get('side'), '')+" / "+({'market': '市价', 'limit': '限价'}.get(o.get('ordType'), o.get('ordType', '')) or ''), o.get("sz"), o.get("px"), STATES.get(o.get("state"), o.get("state"))]) for o in s.pending_orders])
             fill_table(self.algo_table, [(o["algoId"], [o["instId"], o.get("side"), o.get("sz"), o.get("slTriggerPx"), o.get("tpTriggerPx"), o.get("state")]) for o in s.algos])
         if kind in ("orders", "history", "environment", "account"):
             if self.last_submission_id:
                 recent = s.store.get("local_order", self.last_submission_id, scope=s.scope)
                 if recent:
-                    self.set_feedback(STATES.get(recent["status"], recent["status"]) + " · " + (recent.get("error") or recent.get("protection", "")))
+                    self.set_feedback((STATES.get(recent["status"], recent["status"]) or "") + " · " + (recent.get("error") or recent.get("protection", "")))
             if not self.bottom.isVisible():
                 return
             records = [(key, [timestamp(o["time"]), o["draft"]["instrument"], o["draft"]["action"]+" / "+o["draft"]["direction"], STATES.get(o["status"], o["status"]), o.get("error") or o.get("protection", "")]) for key, o in s.store.list("local_order", s.scope, limit=100)]

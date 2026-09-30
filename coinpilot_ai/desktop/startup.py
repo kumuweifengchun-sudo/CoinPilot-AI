@@ -49,6 +49,8 @@ class StartupManager:
         if not self.supported:
             raise OSError("开机自启动仅支持 Windows。")
         api = self.registry
+        if api is None:
+            raise OSError("开机自启动仅支持 Windows。")
         try:
             with api.OpenKey(api.HKEY_CURRENT_USER, RUN_KEY, 0, api.KEY_READ) as key:
                 return api.QueryValueEx(key, VALUE_NAME)
@@ -59,6 +61,8 @@ class StartupManager:
 
     def _write(self, entry):
         api = self.registry
+        if api is None:
+            raise OSError("开机自启动仅支持 Windows。")
         try:
             if entry is None:
                 try:
@@ -74,6 +78,7 @@ class StartupManager:
 
     def save_with(self, enabled, save_config):
         previous = self.read()
+        assert self.registry is not None
         desired = (startup_command(self.config_path, self.cache_dir), self.registry.REG_SZ) if enabled else None
         changed = previous != desired
         if changed:

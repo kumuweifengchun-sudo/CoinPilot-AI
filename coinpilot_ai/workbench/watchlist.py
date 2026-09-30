@@ -12,6 +12,8 @@ class WatchlistDelegate(QStyledItemDelegate):
         return QSize(180, 58)
 
     def paint(self, painter, option, index):
+        if painter is None:
+            return
         painter.save()
         rect = option.rect.adjusted(2, 2, -2, -2)
         selected = bool(option.state & QStyle.StateFlag.State_Selected)

@@ -1,16 +1,22 @@
 """可停靠工作区；布局状态与服务、面板实例的生命周期分离。"""
 import base64
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .profiles import WorkspaceProfiles
 
 from PyQt6.QtCore import QByteArray, QEvent, QObject, Qt, QTimer
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import QApplication, QDockWidget, QMainWindow, QTabWidget
 
+from coinpilot_ai.ui.qt import require, application
 from .titlebar import DockTitleBar
 from .dock import IndependentDock
 
 
 class WorkspaceLayout(QObject):
     VERSION = 1
+    profiles: "WorkspaceProfiles"
 
     def __init__(self, owner, service, panels):
         super().__init__(owner)
@@ -52,7 +58,7 @@ class WorkspaceLayout(QObject):
         self.reset(save=False)
         self.restore()
         self.busy = False
-        app = QApplication.instance()
+        app = application()
         app.screenRemoved.connect(self.recover_screens)
         app.screenAdded.connect(self.connect_screen)
         for screen in app.screens():
@@ -126,7 +132,7 @@ class WorkspaceLayout(QObject):
                               [200, max(400, self.host.width()-530), 320], Qt.Orientation.Horizontal)
         self.host.resizeDocks([self.docks[k] for k in ('market', 'info')],
                               [max(240, self.host.height()-190), 180], Qt.Orientation.Vertical)
-        self.host.layout().activate()
+        require(self.host.layout()).activate()
         self.schedule()
 
     def restore(self):
@@ -209,7 +215,9 @@ class WorkspaceLayout(QObject):
         if not self.busy and not self.stopped and self.focus_state is None:
             self.timer.start()
 
-    def eventFilter(self, watched, event):
+    def eventFilter(self, a0, a1):
+        watched = a0
+        event = require(a1)
         if not self.stopped and not self.busy:
             if event.type() == QEvent.Type.Close and watched in self.docks.values():
                 key = next(k for k, d in self.docks.items() if d is watched)

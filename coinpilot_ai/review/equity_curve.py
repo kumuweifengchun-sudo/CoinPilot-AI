@@ -1,4 +1,5 @@
 """本地模拟账户资产曲线。"""
+from coinpilot_ai.ui.qt import require
 from PyQt6.QtCore import QPointF, QRectF, Qt
 from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import QWidget
@@ -17,7 +18,8 @@ class EquityCurve(QWidget):
         self.points = list(points) if points is not None else None
         self.update()
 
-    def paintEvent(self, event):
+    def paintEvent(self, a0):
+        event = require(a0)
         p = QPainter(self)
         p.fillRect(self.rect(), QColor(color("chart_background")))
         p.setPen(QColor(color("text_secondary")))

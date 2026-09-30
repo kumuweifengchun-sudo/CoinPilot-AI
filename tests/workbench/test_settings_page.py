@@ -22,12 +22,12 @@ class EmptyVault:
 def unified(app, tmp_path, monkeypatch):
     config = dict(DEFAULT_CONFIG, proxy_enabled=False)
     service = CockpitService(config, tmp_path/'test.db', tmp_path/'icons', vault=EmptyVault(), autostart=False)
-    service.fetch_candles = lambda *_: None
+    service.fetch_candles = lambda inst, bar: None
     service.refresh_market = lambda: None
     service.start = lambda: None
     monkeypatch.setattr(desktop, 'CockpitService', lambda *a, **kw: service)
     widget = CoinPilotWidget(config, SettingsStore(tmp_path/'config.json'), start_requests=False)
-    widget.reload_icons = lambda **kw: None
+    widget.reload_icons = lambda clear=False: None
     widget.update_prices = lambda: None
     updater = UpdateController(app, widget, tmp_path/'icons', automatic=False)
     updater.client.check = lambda: None
@@ -145,6 +145,7 @@ def test_layout_preferences_save_while_workspace_is_hidden(unified):
     window.open_settings('工作区布局')
     window.workspace.set_visible('ai', False)
     window.workspace.set_locked(True)
+    record = {}
     for _ in range(30):
         QTest.qWait(50)
         record = controller.service.store.get('workspace_layout', 'main', {})

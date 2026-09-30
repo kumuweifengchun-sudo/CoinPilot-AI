@@ -1,4 +1,5 @@
 """全市场扫描的确定性判断。"""
+from coinpilot_ai.ui.qt import require
 import pytest
 from coinpilot_ai.research.scanner import matches, parse_tickers, scan_metrics
 
@@ -11,8 +12,8 @@ def test_scanner_distinguishes_unavailable_from_nonmatching():
         rows.append([str((i+1)*900000), str(close), str(close+1), str(close-1),
                      str(close), str(volume), "0", "0", "1"])
     metrics = scan_metrics(rows)
-    assert metrics["change"] == pytest.approx(5)
-    assert metrics["volume_ratio"] == 3
+    assert require(metrics)["change"] == pytest.approx(5)
+    assert require(metrics)["volume_ratio"] == 3
     assert matches(metrics, {"change_min": 3, "volume_min": 2}) is True
     assert matches(metrics, {"rsi_max": 30}) is False
     assert matches(None, {"rsi_max": 30}) is None

@@ -3,6 +3,7 @@ import json
 import sqlite3
 import time
 import uuid
+from typing import Any
 from dataclasses import asdict, is_dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -12,7 +13,7 @@ def encode(value):
     def default(item):
         if isinstance(item, Decimal):
             return str(item)
-        if is_dataclass(item):
+        if is_dataclass(item) and not isinstance(item, type):
             return asdict(item)
         raise TypeError(type(item).__name__)
     return json.dumps(value, ensure_ascii=False, default=default, allow_nan=False)
@@ -55,7 +56,7 @@ class Store:
             self.db.executemany("INSERT INTO records VALUES(?,?,?,?,?) ON CONFLICT(scope,kind,id) "
                                 "DO UPDATE SET body=excluded.body,updated=excluded.updated", rows)
 
-    def get(self, kind, key, default=None, scope="global"):
+    def get(self, kind, key, default=None, scope="global") -> Any:
         row = self.db.execute("SELECT body FROM records WHERE scope=? AND kind=? AND id=?",
                               (scope, kind, str(key))).fetchone()
         return json.loads(row[0]) if row else default

@@ -1,6 +1,7 @@
 """基于 Qt 事件循环的可取消请求，无工作线程及阻塞式网络操作。"""
 
 from dataclasses import dataclass, field
+from collections.abc import Callable
 import json
 from pathlib import Path
 
@@ -8,6 +9,7 @@ from PyQt6.QtCore import QObject, QUrl, pyqtSignal
 from PyQt6.QtGui import QImage
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkProxy, QNetworkReply, QNetworkRequest
 
+from coinpilot_ai.ui.qt import require
 from coinpilot_ai.core.config import DEFAULT_CONFIG, ICON_CACHE_DIR, SOURCE_LABELS, normalize_symbol, validate_config
 from .providers import SOURCE_NAMES, SOURCE_ORDER, parse_price, parse_provider_price, price_url, split_symbol
 from .streaming import PriceStream
@@ -25,7 +27,7 @@ class MarketClient(QObject):
     icons_finished = pyqtSignal(int, int)
 
     def __init__(self, cache_dir=ICON_CACHE_DIR, parent=None, manager=None, source="auto", streaming=True,
-                 stream_factory=PriceStream):
+                 stream_factory: Callable[..., PriceStream] = PriceStream):
         super().__init__(parent)
         self.cache_dir = Path(cache_dir)
         self.manager = manager if manager is not None else QNetworkAccessManager(self)
@@ -73,7 +75,7 @@ class MarketClient(QObject):
         request.setTransferTimeout(3000 if kind == "price" else 8000)
         from coinpilot_ai.core.version import VERSION
         request.setRawHeader(b"User-Agent", f"CoinPilotAI/{VERSION}".encode("ascii"))
-        reply = self.manager.get(request)
+        reply = require(self.manager.get(request))
         self.pending[key] = reply
         generation = self.generations[kind]
         reply.finished.connect(lambda: self._finished(key, reply, generation, provider))
@@ -137,7 +139,7 @@ class MarketClient(QObject):
             try:
                 url = price_url(provider, symbol)
             except ValueError as exc:
-                job.errors.append(f"{SOURCE_NAMES[provider]}：{exc}")
+                job.errors.append(f"{SOURCE_NAMES.get(provider or '', provider or '行情源')}：{exc}")
                 continue
             self._request("price", symbol, url, provider)
             return
@@ -204,7 +206,7 @@ class MarketClient(QObject):
                         raise ValueError("交易对无效" if status == 400 else "网络请求失败")
                     price = parse_provider_price(provider, symbol, data)
                 except ValueError as exc:
-                    self.price_jobs[symbol].errors.append(f"{SOURCE_NAMES[provider]}：{exc}")
+                    self.price_jobs[symbol].errors.append(f"{SOURCE_NAMES.get(provider or '', provider or '行情源')}：{exc}")
                     self._next_price_source(symbol)
                 else:
                     self.price_jobs.pop(symbol)

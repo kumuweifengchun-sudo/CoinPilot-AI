@@ -21,6 +21,7 @@ def pixel_buckets(rows, left, span, width, interval, *, bar=None):
                 result.append(tuple(group))
             group, key = list(row), bucket
         else:
+            assert group is not None
             group[2], group[3], group[4] = max(group[2], row[2]), min(group[3], row[3]), row[4]
             for i in (5, 6, 7):
                 group[i] += row[i]

@@ -11,6 +11,7 @@ from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (QApplication, QDialog, QHBoxLayout, QLabel, QMessageBox,
                             QProgressBar, QPushButton, QTextEdit, QVBoxLayout)
 
+from coinpilot_ai.ui.qt import require
 from coinpilot_ai.ui.theme import events, style_sheet
 from .client import UpdateClient
 from coinpilot_ai.core.version import VERSION
@@ -128,7 +129,8 @@ class UpdateDialog(QDialog):
         else:
             self.client.download()
 
-    def closeEvent(self, event):
+    def closeEvent(self, a0):
+        event = require(a0)
         if self.client.state == "preparing":
             event.ignore()
         else:
@@ -244,7 +246,7 @@ class UpdateController(QObject):
         if self.dialog is not None:
             if getattr(self.dialog, "embedded", False):
                 self.install_window = self.dialog.window()
-                self.install_window.setEnabled(False)
+                require(self.install_window).setEnabled(False)
             else:
                 self.dialog.hide()
                 self.dialog.setWindowModality(Qt.WindowModality.ApplicationModal)

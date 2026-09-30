@@ -2,10 +2,11 @@
 from copy import deepcopy
 from uuid import uuid4
 
-from PyQt6.QtWidgets import (QCheckBox, QColorDialog, QDialog, QDialogButtonBox, QDoubleSpinBox,
+from PyQt6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
                              QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QPushButton,
                              QSpinBox, QVBoxLayout)
 
+from coinpilot_ai.ui.qt import require
 from coinpilot_ai.market.indicators import DEFAULTS, KINDS, validate_spec
 from coinpilot_ai.market.intervals import BARS
 
@@ -37,14 +38,14 @@ class IndicatorEditDialog(QDialog):
         form.addRow("K 线周期", self.bar)
         self.color = QPushButton(item["color"])
         self.color.clicked.connect(self.choose_color)
-        self.width = QDoubleSpinBox()
-        self.width.setRange(.5, 6)
-        self.width.setSingleStep(.5)
-        self.width.setValue(item["width"])
+        self.line_width = QDoubleSpinBox()
+        self.line_width.setRange(.5, 6)
+        self.line_width.setSingleStep(.5)
+        self.line_width.setValue(item["width"])
         self.visible = QCheckBox("显示")
         self.visible.setChecked(item["visible"])
         form.addRow("颜色", self.color)
-        form.addRow("线宽", self.width)
+        form.addRow("线宽", self.line_width)
         form.addRow("状态", self.visible)
         layout.addLayout(form)
         self.feedback = QLabel()
@@ -62,7 +63,7 @@ class IndicatorEditDialog(QDialog):
     def save(self):
         self.item.update(params={key: widget.value() for key, widget in self.params.items()},
                          bar=self.bar.currentData(), color=self.color.text(),
-                         width=self.width.value(), visible=self.visible.isChecked())
+                         width=self.line_width.value(), visible=self.visible.isChecked())
         try:
             validate_spec(self.item)
         except ValueError as exc:
@@ -108,7 +109,7 @@ class IndicatorSettingsDialog(QDialog):
 
     def filter_available(self, query):
         for index in range(self.available.count()):
-            item = self.available.item(index)
+            item = require(self.available.item(index))
             item.setHidden(query.strip().lower() not in item.text().lower())
 
     def refresh(self):

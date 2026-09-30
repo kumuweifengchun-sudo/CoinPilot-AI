@@ -14,6 +14,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+from coinpilot_ai.ui.qt import require
+
 from PyQt6.QtTest import QTest
 from PyQt6.QtGui import QFontDatabase
 from coinpilot_ai.application.bootstrap import create_application
@@ -99,7 +101,7 @@ def main():
         cleanup.callback(service.close)
         # 禁止渲染过程中由页面操作启动网络请求。
         service.refresh_market = lambda: None
-        service.fetch_candles = lambda *_: None
+        service.fetch_candles = lambda inst, bar: None
         now = time.time()
         rows = []
         for i in range(300):
@@ -164,7 +166,7 @@ def main():
         position = canvas.point(high_anchor)+QPointF(2, 3)
         canvas.mouseMoveEvent(QMouseEvent(QMouseEvent.Type.MouseMove, position, position,
             Qt.MouseButton.NoButton, Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier))
-        assert canvas.preview["anchors"] == [low_anchor, high_anchor], (canvas.preview["anchors"], low_anchor, high_anchor, canvas.width(), canvas.count, canvas.isVisible())
+        assert require(canvas.preview)["anchors"] == [low_anchor, high_anchor], (require(canvas.preview)["anchors"], low_anchor, high_anchor, canvas.width(), canvas.count, canvas.isVisible())
         assert canvas.snap_target is not None
         app.processEvents()
         window.grab().save(str(output / "chart-magnet.png"))
@@ -250,7 +252,8 @@ def main():
             app.processEvents()
             dock.grab().save(str(output / ("floating-" + key + ".png")))
         window.pages.setCurrentIndex(1)
-        assert all(not d.isVisible() for d in window.workspace.docks.values())
+        app.processEvents()
+        assert all(d.isFloating() and d.isVisible() for d in window.workspace.docks.values()), "切换页面应保留独立浮动面板"
         window.pages.setCurrentIndex(0)
         app.processEvents()
         assert all(d.isVisible() for d in window.workspace.docks.values())

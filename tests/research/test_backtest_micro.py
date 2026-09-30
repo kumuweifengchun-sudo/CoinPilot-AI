@@ -1,4 +1,5 @@
 """回测成交时序与逐笔价位分布的固定样本。"""
+from coinpilot_ai.ui.qt import require
 from decimal import Decimal
 
 import pytest
@@ -45,7 +46,7 @@ def test_book_sequence_gap_and_trade_profile():
     tape.ingest([{"tradeId": "4", "ts": "4000", "px": "103", "sz": "1"}])
     assert not tape.direction_available
     profile = volume_profile(tape.trades, "1")
-    assert (profile["poc"], profile["val"], profile["vah"]) == (Decimal("101"), Decimal("101"), Decimal("102"))
+    assert (require(profile)["poc"], require(profile)["val"], require(profile)["vah"]) == (Decimal("101"), Decimal("101"), Decimal("102"))
 
 
 @pytest.mark.parametrize("kind", ["MA", "EMA", "BOLL", "MACD", "RSI", "ATR", "STOCHASTIC", "VWAP", "SUPERTREND", "VOLUME_MA"])

@@ -1,4 +1,5 @@
 """工作台标题栏：页面导航、窗口操作及 Windows 原生拖动／缩放。"""
+from coinpilot_ai.ui.qt import require
 import sys
 
 from PyQt6.QtCore import QEvent, QPoint, QSize, Qt
@@ -121,7 +122,8 @@ class WorkbenchTitleBar(QWidget):
             child = child.parentWidget()
         return True
 
-    def mousePressEvent(self, event):
+    def mousePressEvent(self, a0):
+        event = require(a0)
         if event.button() == Qt.MouseButton.LeftButton and self.is_drag_region(event.position().toPoint()):
             if self.owner.windowHandle():
                 self.owner.windowHandle().startSystemMove()
@@ -129,14 +131,17 @@ class WorkbenchTitleBar(QWidget):
             return
         super().mousePressEvent(event)
 
-    def mouseDoubleClickEvent(self, event):
+    def mouseDoubleClickEvent(self, a0):
+        event = require(a0)
         if event.button() == Qt.MouseButton.LeftButton and self.is_drag_region(event.position().toPoint()):
             self.toggle_maximized()
             event.accept()
             return
         super().mouseDoubleClickEvent(event)
 
-    def eventFilter(self, watched, event):
+    def eventFilter(self, a0, a1):
+        watched = a0
+        event = require(a1)
         if watched is self.owner:
             if event.type() == QEvent.Type.WindowStateChange:
                 self.sync_controls()
@@ -234,6 +239,8 @@ class DockTitleBar(QWidget):
 
     def sync_controls(self, *_):
         dock = self.parentWidget()
+        if not isinstance(dock, QDockWidget):
+            return
         features = dock.features()
         self.close_button.setVisible(bool(features & QDockWidget.DockWidgetFeature.DockWidgetClosable))
         self.float_button.setVisible(bool(features & QDockWidget.DockWidgetFeature.DockWidgetFloatable))

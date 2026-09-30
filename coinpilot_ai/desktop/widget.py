@@ -1,9 +1,16 @@
 """桌面悬浮窗、轮播与用户交互。"""
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .hotkey import GlobalHotkey
+
 from PyQt6.QtCore import QEvent, QEasingCurve, QRect, QRectF, Qt, QTimer, QVariantAnimation, pyqtSignal
+from PyQt6.sip import voidptr
 from PyQt6.QtGui import QActionGroup, QColor, QImage, QPainter, QPainterPath, QPixmap
 from PyQt6.QtWidgets import QApplication, QMenu, QWidget
 
+from coinpilot_ai.ui.qt import require, application
 from coinpilot_ai.market.client import MarketClient
 from coinpilot_ai.core.config import SOURCE_LABELS
 from coinpilot_ai.market.providers import SOURCE_NAMES
@@ -47,7 +54,7 @@ class CoinPilotWidget(QWidget):
         self._minimum_content_width = 0
         self.settings_dialog = None
         self.settings_router = None
-        self.hotkey = None
+        self.hotkey: GlobalHotkey | None = None
         self._settings_hidden = False
         self.setWindowTitle("CoinPilot AI · 币航")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
@@ -69,7 +76,7 @@ class CoinPilotWidget(QWidget):
         self.apply_settings(config, request=start_requests)
         self.move(config["pos_x"], config["pos_y"])
         self.ensure_visible()
-        app = QApplication.instance()
+        app = application()
         app.aboutToQuit.connect(self.shutdown)
         app.screenRemoved.connect(lambda _: self.ensure_visible())
         for screen in app.screens():
@@ -130,7 +137,7 @@ class CoinPilotWidget(QWidget):
             return
         if self.isVisible():
             self._settings_hidden = self.settings_dialog is not None and self.settings_dialog.isVisible()
-            if self._settings_hidden:
+            if self._settings_hidden and self.settings_dialog is not None:
                 self.settings_dialog.hide()
             self.hide()
         else:
@@ -165,7 +172,7 @@ class CoinPilotWidget(QWidget):
         self._minimum_content_width = max(width, self._minimum_content_width)
         self.logical_width = self._minimum_content_width
         self.logical_height = height
-        area = self.screen().availableGeometry()
+        area = require(self.screen()).availableGeometry()
         scale = min(1, max(1, area.width() - 16) / self.logical_width)
         self.resize(round(self.logical_width * scale), round(height * scale))
         self.ensure_visible()
@@ -215,7 +222,7 @@ class CoinPilotWidget(QWidget):
             return
         target = next((s for s in screens if s.availableGeometry().contains(self.frameGeometry().center())), None)
         if target is None:
-            target = QApplication.primaryScreen()
+            target = QApplication.primaryScreen() or screens[0]
         area = target.availableGeometry()
         x = min(max(self.x(), area.left()), max(area.left(), area.right() - self.width() + 1))
         y = min(max(self.y(), area.top()), max(area.top(), area.bottom() - self.height() + 1))
@@ -234,7 +241,8 @@ class CoinPilotWidget(QWidget):
         self.progress = value
         self.update()
 
-    def event(self, event):
+    def event(self, a0):
+        event = require(a0)
         if event.type() in (QEvent.Type.Show, QEvent.Type.Hide):
             self.visibility_changed.emit(event.type() == QEvent.Type.Show)
         if event.type() in (QEvent.Type.Hide, QEvent.Type.UngrabMouse) and hasattr(self, "hold_timer"):
@@ -263,7 +271,7 @@ class CoinPilotWidget(QWidget):
             if part.isEmpty():
                 continue
             local = part.translated(-screen.geometry().topLeft())
-            pixmap = screen.grabWindow(0, local.x(), local.y(), local.width(), 1)
+            pixmap = screen.grabWindow(voidptr(0), local.x(), local.y(), local.width(), 1)
             if pixmap.isNull():
                 continue
             # grabWindow 返回物理像素；先还原为逻辑宽度，兼容跨屏及不同 DPI。
@@ -282,18 +290,21 @@ class CoinPilotWidget(QWidget):
             self._price_background = background
             self.update()
 
-    def showEvent(self, event):
+    def showEvent(self, a0):
+        event = require(a0)
         super().showEvent(event)
         if not self._closed:
             self._price_background = None
             self.contrast_timer.start()
 
-    def hideEvent(self, event):
+    def hideEvent(self, a0):
+        event = require(a0)
         self.contrast_timer.stop()
         self._price_background = None
         super().hideEvent(event)
 
-    def paintEvent(self, event):
+    def paintEvent(self, a0):
+        event = require(a0)
         painter = QPainter(self)
         render_hints(painter)
         painter.scale(self.width() / self.logical_width, self.height() / self.logical_height)
@@ -318,7 +329,8 @@ class CoinPilotWidget(QWidget):
             painter.drawEllipse(QRectF(self.logical_width - 8, 3, 4, 4))
         painter.end()
 
-    def mousePressEvent(self, event):
+    def mousePressEvent(self, a0):
+        event = require(a0)
         if event.button() == Qt.MouseButton.LeftButton:
             self._press_pos = event.globalPosition().toPoint()
             self._pointer_pos = self._press_pos
@@ -327,12 +339,13 @@ class CoinPilotWidget(QWidget):
             self.hold_timer.start()
 
     def _begin_drag(self):
-        if self._press_pos is not None and not self._closed:
+        if self._press_pos is not None and self._pointer_pos is not None and not self._closed:
             self._click_allowed = False
             self._drag_pos = self._pointer_pos - self.frameGeometry().topLeft()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
 
-    def mouseDoubleClickEvent(self, event):
+    def mouseDoubleClickEvent(self, a0):
+        event = require(a0)
         if event.button() == Qt.MouseButton.LeftButton and not self._closed:
             # 双击的第二次按下不再进入拖动，也不在随后松开时再次刷新。
             self._cancel_pointer()
@@ -348,7 +361,8 @@ class CoinPilotWidget(QWidget):
         self._click_allowed = False
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
-    def mouseMoveEvent(self, event):
+    def mouseMoveEvent(self, a0):
+        event = require(a0)
         if event.buttons() & Qt.MouseButton.LeftButton and self._press_pos is not None:
             self._pointer_pos = event.globalPosition().toPoint()
             if (self._pointer_pos - self._press_pos).manhattanLength() >= QApplication.startDragDistance():
@@ -356,7 +370,8 @@ class CoinPilotWidget(QWidget):
             if self._drag_pos is not None:
                 self.move(self._pointer_pos - self._drag_pos)
 
-    def mouseReleaseEvent(self, event):
+    def mouseReleaseEvent(self, a0):
+        event = require(a0)
         if event.button() != Qt.MouseButton.LeftButton or self._press_pos is None:
             return
         clicked = (self._click_allowed and self.rect().contains(event.position().toPoint())
@@ -381,35 +396,36 @@ class CoinPilotWidget(QWidget):
         menu.setFont(font(11))
         menu.setStyleSheet(menu_style() + "QMenu {font-size:11px;} QMenu::item {padding:6px 24px 6px 10px;}")
         if self.settings_router is None:  # 工作台不可用时保留独立窗口的恢复入口。
-            mini = menu.addAction("迷你模式")
+            mini = require(menu.addAction("迷你模式"))
             mini.setIcon(icon("mini"))
             mini.setCheckable(True)
             mini.setChecked(self.config.get("mini_mode", True))
             mini.triggered.connect(self.set_mini_mode)
-            source_menu = menu.addMenu("行情数据源")
+            source_menu = require(menu.addMenu("行情数据源"))
             source_menu.setIcon(icon("activity"))
             source_menu.setFont(font(11))
             source_group = QActionGroup(source_menu)
             source_group.setExclusive(True)
             for source, label in SOURCE_LABELS.items():
-                source_action = source_menu.addAction(label)
+                source_action = require(source_menu.addAction(label))
                 source_action.setCheckable(True)
                 source_action.setChecked(source == self.config.get("price_source", "auto"))
                 source_group.addAction(source_action)
                 source_action.triggered.connect(lambda checked, value=source: self.set_price_source(value))
-        settings = menu.addAction("设置")
+        settings = require(menu.addAction("设置"))
         settings.setIcon(icon("settings"))
         settings.triggered.connect(self.open_settings)
-        workbench = menu.addAction("交易台" + (f"（{self.unread_events} 条新提醒）" if self.unread_events else ""))
+        workbench = require(menu.addAction("交易台" + (f"（{self.unread_events} 条新提醒）" if self.unread_events else "")))
         workbench.setIcon(icon("workbench"))
         workbench.triggered.connect(self.workbench_requested.emit)
         menu.addSeparator()
-        quit_action = menu.addAction("退出")
+        quit_action = require(menu.addAction("退出"))
         quit_action.setIcon(icon("power"))
-        quit_action.triggered.connect(QApplication.instance().quit)
+        quit_action.triggered.connect(application().quit)
         return menu
 
-    def contextMenuEvent(self, event):
+    def contextMenuEvent(self, a0):
+        event = require(a0)
         self._cancel_pointer()
         menu = self._create_context_menu()
         menu.exec(event.globalPos())
@@ -448,6 +464,7 @@ class CoinPilotWidget(QWidget):
             self.hotkey.close()
         self.client.close()
 
-    def closeEvent(self, event):
+    def closeEvent(self, a0):
+        event = require(a0)
         self.shutdown()
         super().closeEvent(event)

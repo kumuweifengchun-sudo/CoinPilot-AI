@@ -1,5 +1,6 @@
 """本地 HTTP 合约测试：实际 Qt 网络请求，无外部账户和公网依赖。"""
 import json
+from coinpilot_ai.ui.qt import require
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -44,7 +45,7 @@ def http_server():
             self.send_header("Location", "http://127.0.0.1:1/do-not-follow")
             self.end_headers()
 
-        def log_message(self, *_):
+        def log_message(self, format, *args):
             pass
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -110,6 +111,7 @@ def test_history_pagination_dedup_and_failure_coverage(app, tmp_path):
         def __init__(self):
             self.calls = []
         def get(self, path, callback, params=None, private=False):
+            params = require(params)
             self.calls.append((path, dict(params)))
             if "fills-history" in path:
                 if "after" not in params:

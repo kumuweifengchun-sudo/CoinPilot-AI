@@ -55,7 +55,7 @@ class MultiChart(QWidget):
         self.layout_changed()
 
     @property
-    def size(self):
+    def panel_count(self) -> int:
         return self.layout_choice.currentData()
 
     def ensure_panels(self, count):
@@ -74,7 +74,7 @@ class MultiChart(QWidget):
             self.panels.append(panel)
 
     def layout_changed(self, *_):
-        size = self.size or 1
+        size = self.panel_count or 1
         self.ensure_panels(size)
         while self.grid.count():
             self.grid.takeAt(0)
@@ -104,7 +104,7 @@ class MultiChart(QWidget):
                 if source is not self.panels[0]:
                     self.service.select(source.instrument if self.sync_options["symbol"].isChecked() else self.service.selected,
                                         source.bar if self.sync_options["interval"].isChecked() else self.service.bar)
-                for panel in self.panels[1:self.size]:
+                for panel in self.panels[1:self.panel_count]:
                     if panel is source:
                         continue
                     inst = source.instrument if self.sync_options["symbol"].isChecked() else panel.instrument
@@ -112,13 +112,13 @@ class MultiChart(QWidget):
                     panel.set_local_pair(inst, bar)
             finally:
                 self.syncing = False
-        self.service.set_chart_pairs({panel.pair for panel in self.panels[1:self.size]})
+        self.service.set_chart_pairs({panel.pair for panel in self.panels[1:self.panel_count]})
         self.refresh_indicator_pairs()
         self.save()
 
     def refresh_indicator_pairs(self):
         wanted = set()
-        for panel in self.panels[:self.size]:
+        for panel in self.panels[:self.panel_count]:
             for item in panel.indicator_book.indicators:
                 bar = item.get("bar", "chart")
                 if item.get("visible", True) and bar != "chart" and bar != panel.bar:
@@ -137,7 +137,7 @@ class MultiChart(QWidget):
             return
         self.syncing = True
         try:
-            for target in self.panels[:self.size]:
+            for target in self.panels[:self.panel_count]:
                 if target is source:
                     continue
                 if self.sync_options["time"].isChecked():
@@ -156,13 +156,13 @@ class MultiChart(QWidget):
     def sync_crosshair(self, source, stamp):
         if not self.sync_options["crosshair"].isChecked():
             return
-        for target in self.panels[:self.size]:
+        for target in self.panels[:self.panel_count]:
             if target is not source:
                 target.canvas.external_crosshair_time = stamp
                 target.canvas.update()
 
     def save(self, *_):
-        self.service.store.put("chart_grid", "main", {"version": 1, "size": self.size or 1,
+        self.service.store.put("chart_grid", "main", {"version": 1, "size": self.panel_count or 1,
             "primary": [self.service.selected, self.service.bar],
             "pairs": [list(panel.pair) for panel in self.panels[1:]],
             "sync": {key: check.isChecked() for key, check in self.sync_options.items()}})

@@ -5,6 +5,7 @@ from PyQt6.QtCore import QDateTime, QTimer
 from PyQt6.QtWidgets import (QComboBox, QDateTimeEdit, QFormLayout, QHBoxLayout, QLabel,
                              QLineEdit, QScrollArea, QSpinBox, QTabWidget, QVBoxLayout, QWidget)
 
+from coinpilot_ai.ui.qt import require
 from coinpilot_ai.charts.canvas import CandleChart
 from coinpilot_ai.market.intervals import BARS, shift, floor_time
 from coinpilot_ai.trading.models import instrument_id, number
@@ -299,6 +300,8 @@ class ReplayPage(QWidget):
                 cancelled=lambda: generation != self.view_generation or self.service.closed), ready)
 
     def publish_window(self, rows, bar, *, incremental=False):
+        if self.session is None:
+            return
         pair = (self.session.scope, bar)
         if self.series is None or self.series.pair != pair:
             if self.series:
@@ -366,7 +369,7 @@ class ReplayPage(QWidget):
 
     def rebuild_indicators(self):
         while self.indicator_layout.count():
-            child = self.indicator_layout.takeAt(0).widget()
+            child = require(self.indicator_layout.takeAt(0)).widget()
             if child is not None:
                 child.deleteLater()
         self.indicator_strips = []

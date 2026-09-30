@@ -120,7 +120,7 @@ class ChartFeed(QObject):
     series_changed = pyqtSignal(object)
     indicators_changed = pyqtSignal(object)
     INACTIVE_PAIR_LIMIT = 8
-    MEMORY_CANDLE_LIMIT = 16000
+    MEMORY_CANDLE_LIMIT: int = 16000
     LIVE_TAIL_LIMIT = 6000
     STARTUP_CACHE_LIMIT = 6000
     INDICATOR_CACHE_LIMIT = 32
@@ -239,7 +239,7 @@ class ChartFeed(QObject):
             values.move_to_end(key)
             return cached[1].result
         delta = self.indicator_delta(series, cached[0]) if cached else None
-        if delta is not None:
+        if delta is not None and cached is not None:
             start, dropped = delta
             state = cached[1]
             if start >= max(0, len(state.times)-dropped-1) and len(series.data.rows)-start <= 128:
@@ -427,6 +427,7 @@ class ChartFeed(QObject):
         if structural:
             first, dropped = 0, 0
         else:
+            assert dropped is not None
             first = max(0, first-dropped)
         if changed:
             self.revisions[pair] = self.revisions.get(pair, 0) + 1
@@ -498,6 +499,7 @@ class ChartFeed(QObject):
                 s.updated.emit("chart_status")
                 return
             if older:
+                assert boundary is not None
                 rows = [row for row in rows if int(row[0]) < boundary]
                 self.history_state[pair] = "" if rows else "已到历史边界"
             elif rows and previous_last and int(rows[0][0]) > shift(previous_last, bar):

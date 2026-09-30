@@ -1,11 +1,17 @@
 """行情内部唯一行格式：int64 时间、七列 float64 和 uint8 收盘标记。"""
+from __future__ import annotations
+
 from array import array
 from bisect import bisect_left
 from collections.abc import MutableSequence, Sequence, Mapping
 import math
+from typing import TypeAlias, cast, overload
+
+CandleRow: TypeAlias = tuple[int, float, float, float, float, float, float, float, int]
+PriceValues: TypeAlias = tuple[float, float, float, float, float]
 
 
-def candle(row):
+def candle(row) -> CandleRow:
     if len(row) != 9:
         raise ValueError("K 线必须有九个字段")
     stamp, values, confirmed = int(row[0]), tuple(float(v) for v in row[1:8]), int(row[8])
@@ -14,10 +20,10 @@ def candle(row):
             or min(values[4:]) < 0 or low > min(op, close) or high < max(op, close)
             or low > high or confirmed not in (0, 1)):
         raise ValueError("K 线数值无效")
-    return (stamp, *values, confirmed)
+    return cast(CandleRow, (stamp, *values, confirmed))
 
 
-class CandleBuffer(MutableSequence):
+class CandleBuffer(MutableSequence[CandleRow]):
     """列式缓冲区；按行访问仅生成临时元组，不存储字符串或重复行对象。"""
     def __init__(self, rows=()):
         self.columns = [array(code) for code in ("q", *(["d"]*7), "B")]
@@ -32,15 +38,21 @@ class CandleBuffer(MutableSequence):
     def nbytes(self):
         return sum(len(c)*c.itemsize for c in self.columns)
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.times)
 
-    def __getitem__(self, index):
+    @overload
+    def __getitem__(self, index: int) -> CandleRow: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> "CandleBuffer": ...
+
+    def __getitem__(self, index: int | slice) -> CandleRow | "CandleBuffer":
         if isinstance(index, slice):
             result = CandleBuffer()
             result.columns = [column[index] for column in self.columns]
             return result
-        return tuple(column[index] for column in self.columns)
+        return cast(CandleRow, tuple(column[index] for column in self.columns))
 
     def __setitem__(self, index, value):
         if isinstance(index, slice):
@@ -82,25 +94,31 @@ class CandleBuffer(MutableSequence):
         return isinstance(other, Sequence) and len(self) == len(other) and all(a == tuple(b) for a, b in zip(self, other))
 
 
-class ValueView(Sequence):
+class ValueView(Sequence[PriceValues]):
     """绘图 OHLCV 视图，底层仍然是 CandleBuffer 的同一组列。"""
     def __init__(self, rows):
         self.rows = rows
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.rows)
 
-    def __getitem__(self, index):
+    @overload
+    def __getitem__(self, index: int) -> PriceValues: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> list[PriceValues]: ...
+
+    def __getitem__(self, index: int | slice) -> PriceValues | list[PriceValues]:
         if isinstance(index, slice):
             return [self[i] for i in range(*index.indices(len(self)))]
-        return tuple(column[index] for column in self.rows.columns[1:6])
+        return cast(PriceValues, tuple(column[index] for column in self.rows.columns[1:6]))
 
 
-class CandleIndex(Mapping):
+class CandleIndex(Mapping[int, CandleRow]):
     def __init__(self, rows):
         self.rows = rows
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.rows)
 
     def __iter__(self):

@@ -63,9 +63,9 @@ def main():
             self.paint_samples = []
             super().__init__(*args)
 
-        def paintEvent(self, event):
+        def paintEvent(self, a0):
             start = time.perf_counter()
-            super().paintEvent(event)
+            super().paintEvent(a0)
             self.paint_samples.append((time.perf_counter()-start)*1000)
 
     app = create_application([])
@@ -233,6 +233,7 @@ def main():
         chart.left_time = chart.times[-300]
         chart.render(image)
         def scroll():
+            assert chart.left_time is not None
             chart.left_time += chart.interval
             chart.render(image)
         report["integer_pixel_scroll"] = measure(scroll, 80)

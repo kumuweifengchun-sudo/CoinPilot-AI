@@ -12,6 +12,8 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+from coinpilot_ai.ui.qt import require
+
 
 def capture(output):
     from PyQt6.QtCore import Qt
@@ -39,8 +41,8 @@ def capture(output):
         dialog.show()
         QTest.qWait(100)
         assert abs(dialog.devicePixelRatioF() - float(scale)) < 0.02, "实际缩放比例不匹配"
-        assert dialog.scroll.horizontalScrollBar().maximum() == 0
-        collapsed_scroll_range = dialog.scroll.verticalScrollBar().maximum()
+        assert require(dialog.scroll_area.horizontalScrollBar()).maximum() == 0
+        collapsed_scroll_range = require(dialog.scroll_area.verticalScrollBar()).maximum()
         assert dialog.proxy_host_edit.width() >= 80, "代理地址输入框应可读"
         assert not app.translator.isEmpty(), "中文 Qt 翻译未加载"
         price_font = font(12, True, latin=True)
@@ -54,7 +56,7 @@ def capture(output):
         for number in dialog.number_inputs.values():
             assert number.fontMetrics().horizontalAdvance(number.text()) + 16 <= number.width()
         assert dialog.grab().save(str(output / f"settings-{scale}-top.png"))
-        dialog.scroll.verticalScrollBar().setValue(dialog.scroll.verticalScrollBar().maximum())
+        require(dialog.scroll_area.verticalScrollBar()).setValue(require(dialog.scroll_area.verticalScrollBar()).maximum())
         QTest.qWait(50)
         assert dialog.grab().save(str(output / f"settings-{scale}-bottom.png"))
         assert widget.grab().save(str(output / f"widget-{scale}.png"))
@@ -65,11 +67,11 @@ def capture(output):
         assert menu.width() < 220 and menu.height() < 200, "带图标的右键菜单应保持紧凑"
         assert menu.grab().save(str(output / f"menu-{scale}.png"))
         source_menu = menu.actions()[1].menu()
-        source_menu.popup(menu.geometry().topRight())
+        require(source_menu).popup(menu.geometry().topRight())
         QTest.qWait(50)
-        assert source_menu.font().pixelSize() == 11
-        assert source_menu.grab().save(str(output / f"source-menu-{scale}.png"))
-        source_menu.close()
+        assert require(source_menu).font().pixelSize() == 11
+        assert require(source_menu).grab().save(str(output / f"source-menu-{scale}.png"))
+        require(source_menu).close()
         menu.close()
         menu.deleteLater()
         widget.set_mini_mode(False)
@@ -81,14 +83,14 @@ def capture(output):
         dialog.number_inputs["text_size"].setValue(64)
         dialog.number_inputs["bg_opacity"].setValue(100)
         dialog.preview_check.setChecked(True)
-        dialog.scroll.ensureWidgetVisible(dialog.preview)
+        dialog.scroll_area.ensureWidgetVisible(dialog.preview)
         QTest.qWait(50)
         assert dialog.grab().save(str(output / f"settings-{scale}-large-font.png"))
         report = {"scale": scale, "device_pixel_ratio": dialog.devicePixelRatioF(),
                   "dialog_size": [dialog.width(), dialog.height()], "widget_size": [widget.width(), widget.height()],
-                  "horizontal_overflow": dialog.scroll.horizontalScrollBar().maximum(),
+                  "horizontal_overflow": require(dialog.scroll_area.horizontalScrollBar()).maximum(),
                   "vertical_scroll_range": collapsed_scroll_range,
-                  "expanded_preview_scroll_range": dialog.scroll.verticalScrollBar().maximum(),
+                  "expanded_preview_scroll_range": require(dialog.scroll_area.verticalScrollBar()).maximum(),
                   "price_font": QFontInfo(price_font).family(),
                   "price_pixel_size": price_font.pixelSize(),
                   "equal_digit_widths": True,

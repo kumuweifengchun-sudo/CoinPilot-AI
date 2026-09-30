@@ -14,7 +14,8 @@ class WorkQueue(QObject):
         self.futures = {}
         self.serial = count()
         self.closed = False
-        self.completed.connect(self._deliver, Qt.ConnectionType.QueuedConnection)
+        # PyQt 类型声明未包含连接类型参数，运行时保留跨线程排队投递。
+        self.completed.connect(self._deliver, Qt.ConnectionType.QueuedConnection)  # pyright: ignore[reportCallIssue]
 
     def submit(self, operation, callback):
         if self.closed:

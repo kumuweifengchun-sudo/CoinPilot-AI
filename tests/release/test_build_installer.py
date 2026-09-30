@@ -17,6 +17,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def run_ps(script, *arguments):
+    assert POWERSHELL is not None
     return subprocess.run(
         [POWERSHELL, "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass",
          "-File", str(script), *arguments],

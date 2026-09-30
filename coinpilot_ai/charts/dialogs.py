@@ -1,5 +1,6 @@
 """EMA、绘图属性及对象管理窗口。"""
 from copy import deepcopy
+from typing import cast
 import math
 
 from PyQt6.QtCore import QDateTime, Qt, QItemSelectionModel
@@ -8,6 +9,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QColorDialog, QComboB
     QDialogButtonBox, QDoubleSpinBox, QFormLayout, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QPushButton, QScrollArea, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
+from coinpilot_ai.ui.qt import require
 from coinpilot_ai.market.intervals import BARS
 from coinpilot_ai.charts.state import OBJECT_NAMES, DEFAULT_EMAS, validate_emas
 from coinpilot_ai.charts.position import POSITION_TOOLS, position_metrics, position_price, position_value, PositionInputError
@@ -84,8 +86,8 @@ class EmaDialog(QDialog):
         root.addWidget(QLabel("以收盘价计算。周期 1—1000；* 表示历史预热不足。"))
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(["显示", "周期", "颜色", "线宽", "操作"])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.table.verticalHeader().hide()
+        require(self.table.horizontalHeader()).setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        require(self.table.verticalHeader()).hide()
         root.addWidget(self.table)
         row = QHBoxLayout()
         row.addWidget(button("添加 EMA", lambda: self.add({"period": 120, "color": theme_color("positive"), "width": 1.5, "visible": True})))
@@ -124,8 +126,8 @@ class EmaDialog(QDialog):
     def accept(self):
         items = []
         for row in range(self.table.rowCount()):
-            items.append({"visible": self.table.cellWidget(row, 0).isChecked(), "period": self.table.cellWidget(row, 1).value(),
-                          "color": self.table.cellWidget(row, 2).color, "width": self.table.cellWidget(row, 3).value()})
+            items.append({"visible": cast(QCheckBox, self.table.cellWidget(row, 0)).isChecked(), "period": cast(QSpinBox, self.table.cellWidget(row, 1)).value(),
+                          "color": cast(ColorButton, self.table.cellWidget(row, 2)).color, "width": cast(QDoubleSpinBox, self.table.cellWidget(row, 3)).value()})
         self.book.save_emas(validate_emas(items))
         if self.embedded:
             self.feedback.setText("EMA 设置已保存")
@@ -153,12 +155,12 @@ class DrawingDialog(QDialog):
         self.name = QLineEdit(obj.get('name') or OBJECT_NAMES[obj['tool']])
         self.name.setMaxLength(80)
         form.addRow('名称', self.name)
-        self.color, self.width = ColorButton(obj["color"]), width_spin(obj["width"])
-        self.style = QComboBox()
+        self.color, self.line_width = ColorButton(obj["color"]), width_spin(obj["width"])
+        self.line_style = QComboBox()
         for name, key in (("实线", "solid"), ("虚线", "dash"), ("点线", "dot")):
-            self.style.addItem(name, key)
-        self.style.setCurrentIndex(self.style.findData(obj["style"]))
-        for title, widget in (("颜色", self.color), ("线宽", self.width), ("线型", self.style)):
+            self.line_style.addItem(name, key)
+        self.line_style.setCurrentIndex(self.line_style.findData(obj["style"]))
+        for title, widget in (("颜色", self.color), ("线宽", self.line_width), ("线型", self.line_style)):
             form.addRow(title, widget)
         self.fill_color = self.fill_opacity = None
         self.pattern_opacity = None
@@ -241,13 +243,13 @@ class DrawingDialog(QDialog):
         if obj["tool"] == "fib":
             self.levels = QTableWidget(0, 3)
             self.levels.setHorizontalHeaderLabels(["比例", "标签", "颜色"])
-            self.levels.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+            require(self.levels.horizontalHeader()).setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
             root.addWidget(self.levels, 1)
             for level in obj["levels"]:
                 self.add_level(level)
             row = QHBoxLayout()
             row.addWidget(button("添加比例", lambda: self.add_level({"value": 1.618, "label": "1.618", "color": self.color.color})))
-            row.addWidget(button("删除所选比例", lambda: self.levels.removeRow(self.levels.currentRow())))
+            row.addWidget(button("删除所选比例", self.remove_level))
             root.addLayout(row)
         self.error = QLabel()
         self.error.setWordWrap(True)
@@ -258,7 +260,12 @@ class DrawingDialog(QDialog):
             root.addWidget(note)
         dialog_buttons(self, root)
 
+    def remove_level(self):
+        if self.levels is not None:
+            self.levels.removeRow(self.levels.currentRow())
+
     def add_level(self, level):
+        assert self.levels is not None
         row = self.levels.rowCount()
         self.levels.insertRow(row)
         self.levels.setItem(row, 0, QTableWidgetItem(str(level["value"])))
@@ -300,23 +307,23 @@ class DrawingDialog(QDialog):
             levels = []
             if self.levels is not None:
                 for row in range(self.levels.rowCount()):
-                    value = float(self.levels.item(row, 0).text())
+                    value = float(require(self.levels.item(row, 0)).text())
                     if not math.isfinite(value) or abs(value) > 1000:
                         raise ValueError("比例必须是 -1000 至 1000 的有限数值")
-                    levels.append({"value": value, "label": self.levels.item(row, 1).text(), "color": self.levels.cellWidget(row, 2).color})
+                    levels.append({"value": value, "label": require(self.levels.item(row, 1)).text(), "color": cast(ColorButton, self.levels.cellWidget(row, 2)).color})
                 if not levels:
                     raise ValueError("至少保留一条斐波拉契比例")
             if self.result_object["locked"] and self.locked.isChecked():
                 # 锁定对象允许重命名、显隐和解锁，禁止悄悄改变锚点/外观。
                 self.result_object["hidden"] = self.hidden.isChecked()
             else:
-                self.result_object.update(anchors=anchors, color=self.color.color, width=self.width.value(),
-                    style=self.style.currentData(), text=self.text.text(), locked=self.locked.isChecked(), hidden=self.hidden.isChecked(),
+                self.result_object.update(anchors=anchors, color=self.color.color, width=self.line_width.value(),
+                    style=self.line_style.currentData(), text=self.text.text(), locked=self.locked.isChecked(), hidden=self.hidden.isChecked(),
                     bars=[bar for bar, check in self.bars.items() if check.isChecked()])
                 if self.levels is not None:
                     self.result_object["levels"] = levels
                 if self.fill_color is not None:
-                    self.result_object.update(fill_color=self.fill_color.color, fill_opacity=self.fill_opacity.value())
+                    self.result_object.update(fill_color=self.fill_color.color, fill_opacity=require(self.fill_opacity).value())
                 if self.pattern_opacity is not None:
                     self.result_object['opacity'] = self.pattern_opacity.value()
                 if self.notional is not None:

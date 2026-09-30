@@ -8,6 +8,8 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+
+from coinpilot_ai.ui.qt import require
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 
@@ -30,6 +32,7 @@ def main():
     from coinpilot_ai.updates.client import Release
 
     class Owner(QWidget):
+        config: dict[str, object]
         configuration_changed = pyqtSignal(object)
         update_requested = pyqtSignal()
 
@@ -54,10 +57,10 @@ def main():
             controller.client._state(state, message)
             app.processEvents()
             dialog = controller.dialog
-            assert dialog.width() <= 520
-            assert dialog.action.isVisible()
-            dialog.grab().save(str(args.output/(state+".png")))
-        (args.output/"report.json").write_text(json.dumps({"scale": controller.dialog.devicePixelRatioF(),
+            assert require(dialog).width() <= 520
+            assert require(dialog).action.isVisible()
+            require(dialog).grab().save(str(args.output/(state+".png")))
+        (args.output/"report.json").write_text(json.dumps({"scale": require(controller.dialog).devicePixelRatioF(),
             "states": list(states), "network_requests": 0, "installer_executed": False}, indent=2), encoding="utf-8")
     finally:
         controller.close()

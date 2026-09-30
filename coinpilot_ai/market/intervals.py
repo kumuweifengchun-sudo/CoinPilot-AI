@@ -83,4 +83,4 @@ def can_aggregate(base, bar):
 def display_candidates(base):
     utc = base.endswith("utc")
     return sorted((bar for bar in BARS if bar == base or
-                   (bar.endswith("utc") == utc and can_aggregate(base, bar))), key=BARS.get)
+                   (bar.endswith("utc") == utc and can_aggregate(base, bar))), key=BARS.__getitem__)

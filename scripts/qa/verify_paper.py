@@ -39,7 +39,7 @@ def main():
         store.close()
         service = CockpitService(dict(DEFAULT_CONFIG, proxy_enabled=False), folder/'paper.db', folder/'icons', vault=NoVault(), autostart=False)
         service.refresh_market = lambda: None
-        service.fetch_candles = lambda *_: None
+        service.fetch_candles = lambda inst, bar: None
         def network_forbidden(*_a, **_k):
             raise AssertionError('离线验证不得联网')
         service.transport.request = network_forbidden

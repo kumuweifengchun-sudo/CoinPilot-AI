@@ -1,6 +1,7 @@
 """Qt 异步 JSON 请求；POST 不自动重试，不跟随跨站重定向。"""
 import json
 import uuid
+from coinpilot_ai.ui.qt import require
 from dataclasses import dataclass
 
 from PyQt6.QtCore import QByteArray, QObject, QTimer, QUrl
@@ -47,7 +48,7 @@ class JsonTransport(QObject):
         request.setHeader(QNetworkRequest.KnownHeaders.ContentTypeHeader, "application/json")
         for key, value in headers.items():
             request.setRawHeader(key.encode(), value.encode())
-        reply = self.manager.sendCustomRequest(request, method.encode(), QByteArray(body))
+        reply = require(self.manager.sendCustomRequest(request, method.encode(), QByteArray(body)))
         self.pending[request_id] = (reply, callback, method)
         timer = QTimer(reply)
         timer.setSingleShot(True)

@@ -1,3 +1,4 @@
+from coinpilot_ai.ui.qt import require
 import json
 import time
 from decimal import Decimal
@@ -130,6 +131,7 @@ def test_hedge_close_has_position_side():
 
 
 class FakeApi:
+    credentials: dict[str, str]
     def __init__(self):
         self.posts, self.gets = [], []
 
@@ -352,7 +354,7 @@ def test_simulated_broker_full_order_protection_cancel_recovery_flow(service):
             elif path.endswith("/orders-algo-pending"):
                 data = self.algos
             elif path.endswith("/order"):
-                data = [self.orders[params["clOrdId"]]]
+                data = [self.orders[require(params)["clOrdId"]]]
             else:
                 data = []
             callback(data, None)

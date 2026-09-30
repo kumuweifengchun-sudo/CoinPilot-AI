@@ -1,3 +1,4 @@
+from coinpilot_ai.ui.qt import require
 import time
 from decimal import Decimal
 
@@ -29,7 +30,7 @@ def paper(app, tmp_path, monkeypatch):
                              vault=NoVault(), autostart=False)
     monkeypatch.setattr(service.transport, 'request', lambda *_a, **_k: pytest.fail('本地操作不得访问网络'))
     service.refresh_market = lambda: None
-    service.fetch_candles = lambda *_: None
+    service.fetch_candles = lambda inst, bar: None
     service.specs = {INST: dict(SPEC)}
     quote(service, '60000')
     yield service
@@ -249,9 +250,9 @@ def test_local_ui_normal_confirmation_flow_and_compact_account_panel(paper, app,
         dock.resize(320, 340)
         app.processEvents()
         assert window.trade.tabs.selector.isVisible()
-        assert window.trade.tabs.tabBar().isHidden()
+        assert require(window.trade.tabs.tabBar()).isHidden()
         assert window.trade.tabs.selector.count() == 7
-        assert window.trade.position_table.horizontalScrollBar().maximum() > 0
+        assert require(window.trade.position_table.horizontalScrollBar()).maximum() > 0
         for i in range(7):
             window.trade.tabs.selector.setCurrentIndex(i)
             assert window.trade.tabs.currentIndex() == i

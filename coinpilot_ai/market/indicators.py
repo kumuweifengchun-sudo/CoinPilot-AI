@@ -3,7 +3,8 @@ from .intervals import contiguous
 from dataclasses import dataclass
 from array import array
 from math import isnan
-from collections.abc import Sequence
+from collections.abc import Sequence, Mapping
+from typing import overload
 from math import sqrt
 from .rolling import RollingMoments, RollingExtreme
 
@@ -17,15 +18,21 @@ DEFAULTS = {"MA": {"period": 20}, "EMA": {"period": 20}, "RSI": {"period": 14},
             "SUPERTREND": {"period": 10, "multiplier": 3}}
 
 
-class NumericLine(Sequence):
+class NumericLine(Sequence[float | None]):
     """双精度连续存储，以 NaN 表示未预热，读取仍暴露 None。"""
     def __init__(self):
         self.data = array("d")
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.data)
 
-    def __getitem__(self, index):
+    @overload
+    def __getitem__(self, index: int) -> float | None: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> list[float | None]: ...
+
+    def __getitem__(self, index: int | slice) -> float | None | list[float | None]:
         if isinstance(index, slice):
             return [None if isnan(value) else value for value in self.data[index]]
         value = self.data[index]
@@ -42,8 +49,8 @@ class NumericLine(Sequence):
 class IndicatorResult:
     kind: str
     times: Sequence[int]
-    lines: dict[str, Sequence[float | None]]
-    confirmed: Sequence[bool]
+    lines: Mapping[str, Sequence[float | None]]
+    confirmed: Sequence[bool | int]
 
     @property
     def valid(self):

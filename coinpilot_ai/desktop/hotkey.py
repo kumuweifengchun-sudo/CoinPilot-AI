@@ -3,9 +3,12 @@
 import ctypes
 from ctypes import wintypes
 import sys
+from PyQt6.sip import voidptr
+from PyQt6.QtCore import QByteArray
 
 from PyQt6.QtCore import QAbstractNativeEventFilter, QCoreApplication, QTimer
 
+from coinpilot_ai.ui.qt import require
 from coinpilot_ai.core.config import normalize_hotkey
 
 
@@ -28,7 +31,7 @@ class GlobalHotkey(QAbstractNativeEventFilter):
         self.shortcut = None
         self.active_id = None
         self.closed = False
-        QCoreApplication.instance().installNativeEventFilter(self)
+        require(QCoreApplication.instance()).installNativeEventFilter(self)
 
     def change(self, shortcut, persist=lambda: None):
         shortcut = normalize_hotkey(shortcut)
@@ -55,8 +58,10 @@ class GlobalHotkey(QAbstractNativeEventFilter):
         if previous_id is not None:
             self.api.UnregisterHotKey(None, previous_id)
 
-    def nativeEventFilter(self, event_type, message):
-        if not self.closed and bytes(event_type) in (b"windows_generic_MSG", b"windows_dispatcher_MSG"):
+    # SIP 声明返回 voidptr，Qt 的 Windows 消息处理实际接收整数 LRESULT。
+    def nativeEventFilter(self, eventType, message: int | voidptr) -> tuple[bool, int]:  # pyright: ignore[reportIncompatibleMethodOverride]
+        event_type = eventType
+        if not self.closed and (event_type.data() if isinstance(event_type, QByteArray) else bytes(event_type)) in (b"windows_generic_MSG", b"windows_dispatcher_MSG"):
             msg = wintypes.MSG.from_address(int(message))
             if msg.message == self.WM_HOTKEY and msg.wParam == self.active_id:
                 current_id = self.active_id
@@ -72,4 +77,4 @@ class GlobalHotkey(QAbstractNativeEventFilter):
         if self.active_id is not None:
             self.api.UnregisterHotKey(None, self.active_id)
             self.active_id = None
-        QCoreApplication.instance().removeNativeEventFilter(self)
+        require(QCoreApplication.instance()).removeNativeEventFilter(self)

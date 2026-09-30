@@ -1,4 +1,5 @@
 """进程锁先于配置和网络服务创建；重复启动仅唤回当前用户的已有实例。"""
+from coinpilot_ai.ui.qt import require
 import hashlib
 import json
 import os
@@ -46,7 +47,7 @@ class SingleInstance(QObject):
                 response = bytearray()
                 while time.monotonic() < deadline:
                     if socket.bytesAvailable() or socket.waitForReadyRead(200):
-                        response.extend(bytes(socket.readAll()))
+                        response.extend(socket.readAll().data())
                         if b"ok\n" in response:
                             socket.disconnectFromServer()
                             return False
@@ -64,7 +65,7 @@ class SingleInstance(QObject):
 
     def _accept(self):
         while self.server.hasPendingConnections():
-            socket = self.server.nextPendingConnection()
+            socket = require(self.server.nextPendingConnection())
             self.connections.add(socket)
             socket.setReadBufferSize(4096)
             socket.readyRead.connect(lambda s=socket: self._read(s))
@@ -92,8 +93,9 @@ class SingleInstance(QObject):
         socket.write(b"ok\n")
         socket.flush()
         socket.disconnectFromServer()
-        if self.handler is not None:
-            QTimer.singleShot(0, lambda: self.handler(command))
+        handler = self.handler
+        if handler is not None:
+            QTimer.singleShot(0, lambda: handler(command))
         elif command not in self.pending:
             self.pending.append(command)
 

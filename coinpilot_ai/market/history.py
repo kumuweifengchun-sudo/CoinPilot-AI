@@ -5,17 +5,18 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from threading import RLock
 from struct import Struct
-from .buffer import CandleBuffer, candle
+from typing import cast, overload
+from .buffer import CandleBuffer, CandleRow, candle
 from .intervals import BARS, contiguous, floor_time, shift
 from bisect import bisect_left, bisect_right
 
 
-class HistoryData(Sequence):
+class HistoryData(Sequence[CandleRow]):
     RECORD = Struct("<q7dB")
     PAGE = 1024
 
-    def __init__(self, path, count):
-        self.path, self.count = Path(path), count
+    def __init__(self, path, count: int):
+        self.path, self.row_count = Path(path), count
         self.file = self.path.open("rb")
         self.pages = OrderedDict()
         self.lock = RLock()
@@ -43,10 +44,16 @@ class HistoryData(Sequence):
             Path(file.name).unlink(missing_ok=True)
             raise
 
-    def __len__(self):
-        return self.count
+    def __len__(self) -> int:
+        return self.row_count
 
-    def __getitem__(self, index):
+    @overload
+    def __getitem__(self, index: int) -> CandleRow: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> CandleBuffer: ...
+
+    def __getitem__(self, index: int | slice) -> CandleRow | CandleBuffer:
         if isinstance(index, slice):
             return CandleBuffer(self[i] for i in range(*index.indices(len(self))))
         if index < 0:
@@ -61,7 +68,7 @@ class HistoryData(Sequence):
             self.pages.move_to_end(page)
             while len(self.pages) > 2:
                 self.pages.popitem(last=False)
-            return self.RECORD.unpack_from(self.pages[page], offset*self.RECORD.size)
+            return cast(CandleRow, self.RECORD.unpack_from(self.pages[page], offset*self.RECORD.size))
 
     def window(self, cursor, left, count, base, bar, *, cancelled=lambda: False):
         """仅聚合游标以前的已知记录，按显示周期读视口和 300 根预热。"""
@@ -87,6 +94,7 @@ class HistoryData(Sequence):
                 group, bucket, samples, group_start = list(row), stamp, 1, row[0]
                 group[0] = stamp
             else:
+                assert group is not None
                 samples += 1
                 group[2], group[3], group[4] = max(group[2], row[2]), min(group[3], row[3]), row[4]
                 for column in (5, 6, 7):

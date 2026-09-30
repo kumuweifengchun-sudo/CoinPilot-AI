@@ -1,9 +1,12 @@
 """工作台共用控件。"""
 from datetime import datetime
+from typing import overload
+from PyQt6.QtGui import QIcon
 
 from PyQt6.QtCore import Qt, QSignalBlocker
 from PyQt6.QtWidgets import (QAbstractItemView, QComboBox, QDialog, QDialogButtonBox, QHeaderView, QLabel,
-                            QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit, QVBoxLayout)
+                            QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit, QVBoxLayout, QWidget)
+from coinpilot_ai.ui.qt import require
 from .icons import set_button_icon
 from .theme import style_sheet
 
@@ -48,8 +51,24 @@ class AccountTabs(QTabWidget):
         self.selector.currentIndexChanged.connect(self.setCurrentIndex)
         self.currentChanged.connect(self._selected)
 
-    def addTab(self, widget, *args):
-        index = super().addTab(widget, *args)
+    @overload
+    def addTab(self, widget: QWidget | None, a1: str | None) -> int: ...
+
+    @overload
+    def addTab(self, widget: QWidget | None, icon: QIcon, label: str | None) -> int: ...
+
+    def addTab(self, widget: QWidget | None, *args, **kwargs) -> int:
+        # SIP 原生重载只接受位置参数；在 Python 层保留声明中的关键字调用契约。
+        def add_text(a1: str | None) -> int:
+            return super(AccountTabs, self).addTab(widget, a1)
+
+        def add_icon(icon: QIcon, label: str | None) -> int:
+            return super(AccountTabs, self).addTab(widget, icon, label)
+
+        if "icon" in kwargs or (args and isinstance(args[0], QIcon)):
+            index = add_icon(*args, **kwargs)
+        else:
+            index = add_text(*args, **kwargs)
         with QSignalBlocker(self.selector):
             self.selector.addItem(self.tabText(index))
             self.selector.setCurrentIndex(self.currentIndex())
@@ -63,10 +82,11 @@ class AccountTabs(QTabWidget):
     def _fit(self):
         required = sum(self.fontMetrics().horizontalAdvance(self.tabText(i)) + 36 for i in range(self.count()))
         compact = self.width() < required
-        self.tabBar().setVisible(not compact)
+        require(self.tabBar()).setVisible(not compact)
         self.selector.setVisible(compact)
 
-    def resizeEvent(self, event):
+    def resizeEvent(self, a0):
+        event = require(a0)
         super().resizeEvent(event)
         self._fit()
 
@@ -78,10 +98,10 @@ def table(headers, *, readable=False):
     widget.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
     widget.setAlternatingRowColors(True)
     widget.setShowGrid(False)
-    widget.verticalHeader().setDefaultSectionSize(34)
+    require(widget.verticalHeader()).setDefaultSectionSize(34)
     widget.setWordWrap(False)
-    widget.verticalHeader().hide()
-    header = widget.horizontalHeader()
+    require(widget.verticalHeader()).hide()
+    header = require(widget.horizontalHeader())
     header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive if readable else QHeaderView.ResizeMode.Stretch)
     if readable:
         header.setMinimumSectionSize(80)
@@ -95,7 +115,7 @@ def table(headers, *, readable=False):
 
 
 def fill_table(widget, rows):
-    selected_ids = {widget.item(index.row(), 0).data(Qt.ItemDataRole.UserRole) for index in widget.selectionModel().selectedRows() if widget.item(index.row(), 0)}
+    selected_ids = {widget.item(index.row(), 0).data(Qt.ItemDataRole.UserRole) for index in require(widget.selectionModel()).selectedRows() if widget.item(index.row(), 0)}
     widget.setUpdatesEnabled(False)
     widget.setRowCount(len(rows))
     for i, (identity, values) in enumerate(rows):

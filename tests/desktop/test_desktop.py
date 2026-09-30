@@ -1,6 +1,8 @@
 """桌面行为通过真实本地 IPC、多进程竞争及隔离的 Qt 界面验证。"""
+from coinpilot_ai.ui.qt import require
 from pathlib import Path
 import sys
+import time
 import uuid
 
 from PyQt6.QtCore import QProcess, QSize
@@ -47,7 +49,7 @@ def test_concurrent_launch_has_one_owner_and_routes_commands(app):
     try:
         for process in children:
             assert process.waitForFinished(8000)
-            output = bytes(process.readAll()).decode()
+            output = process.readAll().data().decode()
             assert process.exitCode() == 0, output
             outputs.append(output)
         assert sum("PRIMARY" in value for value in outputs) == 1
@@ -65,7 +67,7 @@ def test_dead_owner_lock_is_recovered(app):
     process = child(namespace, duration=30000)
     try:
         assert process.waitForReadyRead(4000)
-        assert b"PRIMARY" in bytes(process.readAll())
+        assert b"PRIMARY" in process.readAll().data()
     finally:
         process.kill()
         process.waitForFinished(3000)
@@ -108,7 +110,9 @@ def test_tray_restore_pause_badge_and_service_fallback(app, tmp_path, monkeypatc
         assert all(len(action.text()) <= 4 for action in controller.menu.actions() if not action.isSeparator())
         widget.hide()
         controller.activated(QSystemTrayIcon.ActivationReason.Trigger)
-        QTest.qWait(app.doubleClickInterval()+30)
+        deadline = time.monotonic() + app.doubleClickInterval()/1000 + 1
+        while not widget.isVisible() and time.monotonic() < deadline:
+            QTest.qWait(5)
         assert widget.isVisible()
         assert controller.visibility_action.text() == "隐藏小窗"
         controller.pause_action.setChecked(True)
@@ -120,12 +124,12 @@ def test_tray_restore_pause_badge_and_service_fallback(app, tmp_path, monkeypatc
         assert not controller.toast.isVisible()
         controller.activated(QSystemTrayIcon.ActivationReason.DoubleClick)
         assert starts == [True]
-        assert controller.window.isVisible()
-        controller.window.showMinimized()
+        assert require(controller.window).isVisible()
+        require(controller.window).showMinimized()
         controller.open_workbench()
-        assert not controller.window.isMinimized()
+        assert not require(controller.window).isMinimized()
         assert widget.unread_events == 0
-        controller.window.close()
+        require(controller.window).close()
         widget.hide()
         assert not service.closed
     finally:

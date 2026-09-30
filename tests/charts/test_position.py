@@ -1,4 +1,5 @@
 """多空绘图的纯计算规则。"""
+from coinpilot_ai.ui.qt import require
 from decimal import Decimal
 
 import pytest
@@ -70,7 +71,7 @@ def test_position_dialog_rounds_prices_and_focuses_missing_amount(app):
         assert not dialog.result()
         assert dialog.error.text() == '请填写仓位金额'
         assert dialog.focusWidget() is dialog.notional
-        dialog.notional.setText('1000')
+        require(dialog.notional).setText('1000')
         dialog.accept()
         assert dialog.result() and not dialog.error.text()
         assert [anchor[1] for anchor in dialog.result_object['anchors']] == [84615.4, 86615.1, 83131.7]
@@ -89,7 +90,7 @@ def test_position_dialog_identifies_invalid_field(app, field, value):
     dialog = DrawingDialog(obj, tick_size='0.1')
     try:
         widget = dialog.notional if field == '仓位金额' else dialog.position_fields[field]
-        widget.setText(value)
+        require(widget).setText(value)
         dialog.accept()
         assert not dialog.result() and field in dialog.error.text()
     finally:

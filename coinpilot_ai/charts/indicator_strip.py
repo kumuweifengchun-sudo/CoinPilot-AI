@@ -1,4 +1,5 @@
 """与主图共用时间视口的轻量指标副图。"""
+from coinpilot_ai.ui.qt import require
 from PyQt6.QtCore import QPointF, QRectF, Qt
 from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import QWidget
@@ -13,7 +14,8 @@ class IndicatorStrip(QWidget):
         self.canvas, self.indicator_id = canvas, indicator_id
         self.setFixedHeight(112)
 
-    def paintEvent(self, event):
+    def paintEvent(self, a0):
+        event = require(a0)
         p = QPainter(self)
         p.fillRect(self.rect(), QColor(color("chart_background")))
         item = next(((setting, result) for setting, result in self.canvas.indicator_results

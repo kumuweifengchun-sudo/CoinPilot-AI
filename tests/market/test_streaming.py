@@ -1,3 +1,4 @@
+from coinpilot_ai.ui.qt import require
 import json
 from decimal import Decimal
 
@@ -8,6 +9,10 @@ from coinpilot_ai.market.client import MarketClient
 from coinpilot_ai.market.providers import parse_stream_price, stream_subscription
 from coinpilot_ai.market.streaming import PriceStream
 from test_network import Manager
+
+
+class ClockedPriceStream(PriceStream):
+    test_time: list[float]
 
 
 class Signal:
@@ -58,7 +63,7 @@ def ticker(price="123", symbol="BTCUSDT"):
 @pytest.fixture
 def stream(app):
     now = [100.0]
-    instance = PriceStream("BTCUSDT", "auto", QNetworkProxy(), socket_factory=Socket,
+    instance = ClockedPriceStream("BTCUSDT", "auto", QNetworkProxy(), socket_factory=Socket,
                            clock=lambda: now[0])
     instance.test_time = now
     instance.start()
@@ -138,7 +143,7 @@ def test_fixed_source_backoff_and_shutdown(app):
     stream = PriceStream("BTCUSDT", "bybit", QNetworkProxy(), socket_factory=Socket)
     for attempt in range(8):
         stream.start()
-        stream.socket.errorOccurred.emit(1)
+        require(stream.socket).errorOccurred.emit(1)
         assert stream.source == "bybit"
         assert stream.retry.interval() == min(30_000, 1000 * 2 ** attempt)
     stream.close()
@@ -205,10 +210,11 @@ def test_exchange_specific_heartbeat(app, source):
     now = [100.0]
     stream = PriceStream("BTCUSDT", source, QNetworkProxy(), socket_factory=Socket, clock=lambda: now[0])
     stream.start()
-    stream.socket.connected.emit()
+    require(stream.socket).connected.emit()
     now[0] += 15
     stream._check()
     expected = "ping" if source == "okx" else '{"op":"ping"}'
+    assert isinstance(stream.socket, Socket)
     assert stream.socket.sent[-1] == expected
     assert stream_subscription(source, "BTCUSDT")[0].startswith("wss://")
     stream.close()

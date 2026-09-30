@@ -21,7 +21,7 @@ def main():
     modes = SOURCE_ORDER if args.source == "all" else (args.source,)
     results = {"prices": {mode: {} for mode in modes}, "icons": None}
     with tempfile.TemporaryDirectory(prefix="coinpilot-ai-network-") as cache:
-        clients = {mode: MarketClient(cache, source=mode, streaming=False) for mode in modes}
+        clients = {mode: MarketClient(Path(cache), source=mode, streaming=False) for mode in modes}
         def finished():
             if all(len(prices) == 3 for prices in results["prices"].values()) and results["icons"] is not None:
                 app.quit()

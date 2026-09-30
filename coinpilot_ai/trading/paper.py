@@ -16,7 +16,7 @@ class PaperBroker:
     credentials = {}
 
     def __init__(self, store, public_api, specs, quotes, changed, *, scope=None, clock=None,
-                 fee=None, slippage_bps=0):
+                 fee=None, slippage_bps: str | int | float | Decimal = 0):
         self.SCOPE = scope or type(self).SCOPE
         self.clock = clock or time.time
         self.FEE = number(fee) if fee is not None else type(self).FEE

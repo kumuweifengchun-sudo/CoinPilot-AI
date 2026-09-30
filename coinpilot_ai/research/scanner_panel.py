@@ -1,4 +1,5 @@
 """全市场扫描器界面与可保存筛选模板。"""
+from coinpilot_ai.ui.qt import require
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import (QCheckBox, QComboBox, QFormLayout, QHBoxLayout, QInputDialog,
                              QLabel, QLineEdit, QScrollArea, QVBoxLayout, QWidget)
@@ -144,10 +145,12 @@ class ScannerPanel(QWidget):
         if inst:
             self.service.select(inst)
 
-    def showEvent(self, event):
+    def showEvent(self, a0):
+        event = require(a0)
         super().showEvent(event)
         self.scanner.start()
 
-    def hideEvent(self, event):
+    def hideEvent(self, a0):
+        event = require(a0)
         self.scanner.stop()
         super().hideEvent(event)

@@ -1,4 +1,5 @@
 """保留 Qt 停靠能力，同时让浮动面板拥有独立的系统窗口。"""
+from coinpilot_ai.ui.qt import require
 import sys
 
 from PyQt6.QtCore import Qt, QTimer
@@ -11,7 +12,8 @@ class IndependentDock(QDockWidget):
         self._configuring_window = False
         self.topLevelChanged.connect(self.sync_window)
 
-    def showEvent(self, event):
+    def showEvent(self, a0):
+        event = require(a0)
         super().showEvent(event)
         self.sync_window()
         # Qt 可能在 showEvent 返回后的原生显示阶段再次设置 owner。

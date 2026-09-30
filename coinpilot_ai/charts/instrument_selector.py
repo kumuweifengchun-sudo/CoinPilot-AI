@@ -2,6 +2,7 @@
 from PyQt6.QtCore import QSignalBlocker, Qt, pyqtSignal
 from PyQt6.QtWidgets import QComboBox, QCompleter, QSizePolicy
 
+from coinpilot_ai.ui.qt import require
 from coinpilot_ai.trading.models import instrument_id
 
 
@@ -18,13 +19,13 @@ class InstrumentSelector(QComboBox):
         self.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setAccessibleName('图表品种')
-        self.lineEdit().setPlaceholderText('搜索币种')
-        self.completer().setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-        self.completer().setFilterMode(Qt.MatchFlag.MatchContains)
-        self.completer().setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        require(self.lineEdit()).setPlaceholderText('搜索币种')
+        require(self.completer()).setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        require(self.completer()).setFilterMode(Qt.MatchFlag.MatchContains)
+        require(self.completer()).setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
         self.setMaxVisibleItems(12)
         self.activated.connect(lambda _: self.commit())
-        self.lineEdit().returnPressed.connect(self.commit)
+        require(self.lineEdit()).returnPressed.connect(self.commit)
         service.updated.connect(self.refresh_choices)
         self.refresh_choices('market')
         self.set_instrument(instrument)
@@ -40,14 +41,14 @@ class InstrumentSelector(QComboBox):
         choices = list(dict.fromkeys([*watchlist, self.instrument, *sorted(self.service.specs)]))
         if choices == self._choices:
             return
-        text, cursor = self.currentText(), self.lineEdit().cursorPosition()
+        text, cursor = self.currentText(), require(self.lineEdit()).cursorPosition()
         with QSignalBlocker(self):
             self.clear()
             for instrument in choices:
                 self.addItem(self.label(instrument), instrument)
                 self.setItemData(self.count()-1, instrument, Qt.ItemDataRole.ToolTipRole)
             self.setEditText(text)
-            self.lineEdit().setCursorPosition(cursor)
+            require(self.lineEdit()).setCursorPosition(cursor)
         self._choices = choices
 
     def set_instrument(self, instrument):
@@ -56,7 +57,7 @@ class InstrumentSelector(QComboBox):
         with QSignalBlocker(self):
             self.setCurrentIndex(self.findData(instrument))
             self.setEditText(self.label(instrument))
-            self.lineEdit().setCursorPosition(0)
+            require(self.lineEdit()).setCursorPosition(0)
         self.setToolTip(f'{instrument} · OKX USDT 永续\n下拉选择或输入币名搜索，回车确认')
 
     def commit(self):

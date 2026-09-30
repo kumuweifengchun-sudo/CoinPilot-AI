@@ -20,8 +20,8 @@ def rows(count, step=60000, begin=300000):
         yield (begin+i*step, price, price+2, price-2, price+.2, 10+i%7, 20., 30., 1)
 
 
-def wait_for(predicate):
-    deadline = time.monotonic()+10
+def wait_for(predicate, timeout=10):
+    deadline = time.monotonic()+timeout
     while not predicate():
         QTest.qWait(1)
         assert time.monotonic() < deadline
@@ -40,6 +40,18 @@ def test_numeric_buffer_aliases_and_compact_size():
     del data[:9000]
     assert len(view) == len(index) == 1000
     assert data.nbytes == 65000
+
+
+def test_history_preserves_sequence_count_and_slice_buffer():
+    history = HistoryData.create(rows(3), 60000)
+    try:
+        first = history[0]
+        assert history.count(first) == 1
+        assert history.index(history[-1]) == 2
+        assert isinstance(history[:2], CandleBuffer)
+        assert history[:2] == [first, history[1]]
+    finally:
+        history.close()
 
 
 @pytest.mark.parametrize("kind", sorted(KINDS))
@@ -135,8 +147,8 @@ def test_background_work_keeps_ui_alive_and_cancel_disposes_result(app):
     try:
         token = queue.submit(work, lambda value, error: delivered.append((value, error)))
         wait_for(began.is_set)
-        QTest.qWait(25)
-        assert len(pulses) >= 2 and not delivered
+        wait_for(lambda: len(pulses) >= 2, timeout=1)
+        assert not delivered
         queue.cancel(token)
         future = queue.futures[token]
         release.set()
@@ -156,7 +168,7 @@ def test_huge_gap_returns_one_interval(tmp_path):
 
 
 def test_replay_window_aggregates_only_known_prefix():
-    data = list(rows(100))
+    data = [list(row) for row in rows(100)]
     future = list(data[17]); future[2] = 99999; data[17] = future
     snapshot = HistoryData.create(data, 60000)
     try:
@@ -174,8 +186,8 @@ def test_replay_window_aggregates_only_known_prefix():
 
 def test_unconfirmed_history_restarts_indicator_warmup():
     from coinpilot_ai.market.indicators import IndicatorState
-    data = list(rows(10))
-    data[6] = (*data[6][:8], 0)
+    data = [list(row) for row in rows(10)]
+    data[6] = [*data[6][:8], 0]
     state = IndicatorState({"kind": "MA", "params": {"period": 3}}, bar="1m")
     result = state.update(data, 0)
     assert list(result.lines["value"])[7:9] == [None, None]

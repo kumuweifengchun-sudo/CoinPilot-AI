@@ -125,7 +125,7 @@ uv run --locked coinpilot-ai.py --help
 - 分离后的浮动面板独立显示，主窗口最小化、关闭到托盘或切换页面不影响副窗口；可单独关闭、重新停靠，退出程序时统一关闭。
 - 关闭工作台只隐藏窗口，隐藏迷你窗口也不会停止后台服务；退出应用后停止监控。
 
-首次仅启动迷你窗口且没有配置账户或启用提醒时，工作台后台行情按需启动；打开工作台后继续保留后台监控。训练与回测页在首次访问时创建，已打开页面的草稿继续保留。内存、安装体积和验证方法见 [性能优化说明](docs/performance.md)。
+首次仅启动迷你窗口且没有配置账户或启用提醒时，工作台后台行情按需启动；打开工作台后继续保留后台监控。训练与回测页在首次访问时创建，已打开页面的草稿继续保留。验证方法见 [开发细则](docs/development.md#专项验证)。
 
 ### 图表与市场分析
 
@@ -251,7 +251,7 @@ K 线周期与 OKX 交易产品接口对齐：
 
 ## 🏗️ 项目结构
 
-应用按桌面、行情、图表、交易、研究与复盘拆分模块，共用本地存储和 UI 基础设施。开发前请先阅读 [开发协作约定](AGENT.md)。
+应用按桌面、行情、图表、交易、研究与复盘拆分模块，共用本地存储和 UI 基础设施。开发前请先阅读 [开发协作约定](AGENTS.md)。
 
 <details>
 <summary><strong>展开目录与模块职责</strong></summary>
@@ -274,13 +274,13 @@ coinpilot_ai/
   assets/                     应用图标、字体、SVG 及更新安装脚本
 tests/                        按功能分组的自动化测试及 integration 集成测试
 scripts/
-  checks/                     公开接口连通性检查
+  checks/                     公开接口连通性与代码质量检查
   qa/                         界面渲染、图表基准、模拟盘及启动验证
   release/                    安装包构建与安装器测试
   assets/                     应用图标生成
 packaging/windows/            PyInstaller 配置、Windows 清单与 Inno Setup 安装器
 pyproject.toml / uv.lock       项目元数据与锁定依赖
-AGENT.md                      开发协作约定
+AGENTS.md                      开发协作约定
 ```
 
 </details>
@@ -293,11 +293,24 @@ AGENT.md                      开发协作约定
 
 ```powershell
 uv sync --locked --group dev
+uv run --locked --group dev basedpyright
 uv run --locked --group dev pytest -q
 
 # 按改动范围运行，例如图表与研究模块
 uv run --locked --group dev pytest -q tests/charts tests/research
 ```
+
+类型检查使用 `pyproject.toml` 中的 `standard` 规则，并禁止缺少类型参数的泛型声明；覆盖应用源码、测试、开发脚本及 `typings/` 本地声明。`typings/` 补充 PyQt6 的 `QTest` 静态函数声明；原生消息的整数返回值及跨线程信号连接保留注明原因的单项声明兼容处理。
+
+日常开发可使用统一入口，类型检查失败时会立即停止，完整入口随后运行回归测试：
+
+```powershell
+.\scripts\checks\check_quality.ps1
+# 编辑时快速检查类型，交付前仍需完整检查
+.\scripts\checks\check_quality.ps1 -TypeOnly
+```
+
+新增代码须遵守 [类型定义与对象结构规范](AGENTS.md#类型定义与对象结构)。[GitHub Actions](.github/workflows/quality.yml) 会在推送和 Pull Request 时运行完整质量检查；配置推送到 GitHub 后生效。
 
 <details>
 <summary><strong>离线界面验证与性能检查</strong></summary>
@@ -403,5 +416,5 @@ GitHub Release 的标签、安装包版本和源码提交应对应；发布时�
   <a href="#quick-start">开始使用</a> ·
   <a href="#configuration">配置与数据</a> ·
   <a href="#release">构建发行版</a> ·
-  <a href="AGENT.md">开发协作约定</a>
+  <a href="AGENTS.md">开发协作约定</a>
 </p>

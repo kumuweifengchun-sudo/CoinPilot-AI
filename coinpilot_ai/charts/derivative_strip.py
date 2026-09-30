@@ -1,4 +1,5 @@
 """按图表时间视口绘制公开衍生品序列。"""
+from coinpilot_ai.ui.qt import require
 import time
 from PyQt6.QtCore import QPointF, QRectF, Qt
 from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
@@ -13,7 +14,8 @@ class DerivativeStrip(QWidget):
         self.panel, self.kind = panel, kind
         self.setFixedHeight(72)
 
-    def paintEvent(self, event):
+    def paintEvent(self, a0):
+        event = require(a0)
         p = QPainter(self)
         p.fillRect(self.rect(), QColor(color("chart_background")))
         canvas = self.panel.canvas

@@ -4,6 +4,7 @@ import time
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QTabWidget, QTextBrowser, QVBoxLayout, QWidget
 
+from coinpilot_ai.ui.qt import require
 from coinpilot_ai.charts.panel import ChartPanel, SavedSplitter
 from coinpilot_ai.charts.multi import MultiChart
 from coinpilot_ai.research.scanner_panel import ScannerPanel
@@ -30,7 +31,7 @@ class Workbench(QMainWindow):
         super().__init__(parent)
         self.service = service
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint)
-        area = self.screen().availableGeometry()
+        area = require(self.screen()).availableGeometry()
         self.resize(min(1440, area.width()), min(900, area.height()))
         self.setMinimumSize(min(1000, area.width()), min(650, area.height()))
         self.setStyleSheet(style_sheet())
@@ -44,7 +45,7 @@ class Workbench(QMainWindow):
         self.pages = QTabWidget()
         self.pages.setObjectName("navigation")
         self.pages.setIconSize(QSize(18, 18))
-        self.pages.tabBar().hide()
+        require(self.pages.tabBar()).hide()
         self.pages.currentChanged.connect(self.page_changed)
         self.title_bar = WorkbenchTitleBar(self, self.pages)
         root.addWidget(self.title_bar)
@@ -120,7 +121,8 @@ class Workbench(QMainWindow):
                 tabs.setCurrentIndex(current)
             finally:
                 tabs.blockSignals(blocked)
-            placeholder.deleteLater()
+            if placeholder is not None:
+                placeholder.deleteLater()
         return page
 
     @property
@@ -324,14 +326,16 @@ class Workbench(QMainWindow):
         self.settings_page.select_section(section)
         self.settings_page.refresh_status()
 
-    def showEvent(self, event):
+    def showEvent(self, a0):
+        event = require(a0)
         super().showEvent(event)
         self.title_bar.setup_native_frame()
         if hasattr(self, "workspace"):
             self.workspace.activate(self.pages.currentIndex() == 0)
             self.sync_visible(True)
 
-    def hideEvent(self, event):
+    def hideEvent(self, a0):
+        event = require(a0)
         if hasattr(self, "workspace"):
             self.workspace.activate(False)
         super().hideEvent(event)
@@ -339,10 +343,11 @@ class Workbench(QMainWindow):
     def apply_theme(self, _theme_id):
         self.setStyleSheet(style_sheet())
         self.title_bar.apply_theme()
-        self.watchlist.viewport().update()
+        require(self.watchlist.viewport()).update()
         self.refresh("status")
 
-    def nativeEvent(self, event_type, message):
+    # SIP 声明返回 voidptr，Qt 的 Windows 消息处理实际接收整数 LRESULT。
+    def nativeEvent(self, eventType, message) -> tuple[bool, int]:  # pyright: ignore[reportIncompatibleMethodOverride]
         if hasattr(self, 'title_bar'):
             result = self.title_bar.native_event(message)
             if result is not None:
@@ -394,7 +399,8 @@ class Workbench(QMainWindow):
         stale = time.time() - s.account.get("time", 0) > 20
         self.status.setText("OKX 行情：" + (s.market_error or "运行中") + "  |  账户：" + (s.account_error or ("数据过期" if stale else "已同步")) + "  |  " + ("通知已暂停" if s.settings.get("notifications_paused") else "通知开启") + "  |  关闭窗口后继续后台运行")
 
-    def closeEvent(self, event):
+    def closeEvent(self, a0):
+        event = require(a0)
         if self.exiting:
             if self._replay is not None:
                 self._replay.shutdown()

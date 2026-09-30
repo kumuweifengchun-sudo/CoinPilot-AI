@@ -44,19 +44,19 @@ class MarketMicro(QObject):
         self.active = False
         self.poll.stop()
         self.retry.stop()
-        self.disconnect()
+        self.close_socket()
 
     def service_updated(self, kind):
         if kind == "selection" and self.active:
             self.select(self.service.selected)
         elif kind == "proxy" and self.active:
-            self.disconnect()
+            self.close_socket()
             self.select(self.service.selected)
 
     def select(self, instrument):
         if instrument == self.instrument and self.socket is not None:
             return
-        self.disconnect()
+        self.close_socket()
         self.instrument = instrument
         self.generation += 1
         self.book.reset()
@@ -130,7 +130,7 @@ class MarketMicro(QObject):
     def failed(self, socket):
         if socket is not self.socket:
             return
-        self.disconnect()
+        self.close_socket()
         self.book.reset()
         self.tape.reset()
         self.status = "数据中断 · 重建快照中"
@@ -139,7 +139,7 @@ class MarketMicro(QObject):
             self.failures += 1
             self.retry.start(min(30000, 1000*2**min(self.failures-1, 5)))
 
-    def disconnect(self):
+    def close_socket(self):
         old, self.socket = self.socket, None
         self.watchdog.stop()
         if old:

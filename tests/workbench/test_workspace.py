@@ -23,8 +23,8 @@ def workspace(app, tmp_path):
     service = CockpitService(dict(DEFAULT_CONFIG, proxy_enabled=False), tmp_path/'workspace.db',
                              tmp_path/'icons', vault=EmptyVault(), autostart=False)
     service.refresh_market = lambda: None
-    service.fetch_candles = lambda *_: None
-    service.ask_ai = lambda *_: pytest.fail('布局操作不应发起 AI 请求')
+    service.fetch_candles = lambda inst, bar: None
+    service.ask_ai = lambda scene, context, template=None, draft=False, event_id=None: pytest.fail('布局操作不应发起 AI 请求')
     window = Workbench(service, lambda: None)
     window.resize(1440, 900)
     window.show()
@@ -130,7 +130,8 @@ def test_six_chart_contexts_and_named_workspace_restore(workspace, app):
     second.indicator_book.save_indicators([])
     service.store.put('chart_pane_view', view_key, {"count": 120})
     profiles.activate('六图研究')
-    assert grid.size == 6
+    assert grid.panel_count == 6
+    assert grid.size().width() == grid.width()
     assert grid.panels[1].pair == ('ETH-USDT-SWAP', '1H')
     assert grid.panels[1].indicator_book.indicators == [dict(indicator, bar="chart")]
     assert service.store.get('chart_pane_view', view_key)['count'] == 42

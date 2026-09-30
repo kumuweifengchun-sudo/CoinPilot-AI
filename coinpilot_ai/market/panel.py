@@ -1,4 +1,5 @@
 """盘口、逐笔、衍生品快照与成交量分布。"""
+from coinpilot_ai.ui.qt import require
 import time
 from datetime import datetime, timezone
 
@@ -108,10 +109,12 @@ class MicroPanel(QWidget):
         self.profile.setText((f"POC {result['poc']} · VAH {result['vah']} · VAL {result['val']} · "
                               f"成交量 {result['total']}") if result else "该范围无成交")
 
-    def showEvent(self, event):
+    def showEvent(self, a0):
+        event = require(a0)
         super().showEvent(event)
         self.feed.start()
 
-    def hideEvent(self, event):
+    def hideEvent(self, a0):
+        event = require(a0)
         self.feed.stop()
         super().hideEvent(event)

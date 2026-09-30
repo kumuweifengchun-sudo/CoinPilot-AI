@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 from PyQt6.QtCore import QObject, QTimer, QUrl, pyqtSignal
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkProxy, QNetworkReply, QNetworkRequest
 
+from coinpilot_ai.ui.qt import require
 from coinpilot_ai.core.version import VERSION
 
 REPOSITORY = "kumuweifengchun-sudo/CoinPilot-AI"
@@ -164,7 +165,7 @@ class UpdateClient(QObject):
         request.setTransferTimeout(30000 if kind == "installer" else 15000)
         request.setRawHeader(b"User-Agent", f"CoinPilotAI/{self.current}".encode("ascii"))
         request.setRawHeader(b"Accept", b"application/vnd.github+json" if kind == "metadata" else b"application/octet-stream")
-        reply = self.reply = self.manager.get(request)
+        reply = self.reply = require(self.manager.get(request))
         reply.setReadBufferSize(256*1024)
         reply.readyRead.connect(lambda: self._read(reply, serial))
         reply.finished.connect(lambda: self._finish(reply, serial))
@@ -181,6 +182,8 @@ class UpdateClient(QObject):
                 if not raw:
                     break
                 if self.kind == "installer":
+                    if self.release is None or self.file is None:
+                        raise ValueError("下载任务状态不完整，请重新下载。")
                     self.received += len(raw)
                     if self.received > self.release.size:
                         raise ValueError("下载内容超过发行版声明的安装包大小")
@@ -191,7 +194,7 @@ class UpdateClient(QObject):
                     limit = 2*1024*1024 if self.kind == "metadata" else 4096
                     if len(self.buffer) > limit:
                         raise ValueError("更新信息超出允许大小")
-            if self.kind == "installer":
+            if self.kind == "installer" and self.release is not None:
                 self.progress.emit(self.received, self.release.size)
         except (OSError, ValueError) as exc:
             self._fail(str(exc) if isinstance(exc, ValueError) else "无法写入更新缓存，请检查磁盘空间与权限。")
@@ -226,6 +229,8 @@ class UpdateClient(QObject):
                     self._state("available", f"发现新版本 {self.release.version}。")
                     self.available.emit(self.release)
             elif self.kind == "checksum":
+                if self.release is None:
+                    raise ValueError("发行版信息缺失，请重新检查更新。")
                 self.checksum = parse_checksum(bytes(self.buffer), self.release.filename)
                 self.cache_dir.mkdir(parents=True, exist_ok=True)
                 folder = Path(tempfile.mkdtemp(prefix="release-", dir=self.cache_dir))
@@ -235,6 +240,8 @@ class UpdateClient(QObject):
                 self._state("downloading", "正在后台下载安装包，可继续使用程序。")
                 self._request(self.release.url, "installer")
             else:
+                if self.file is None or self.release is None or self.part is None:
+                    raise ValueError("下载任务状态不完整，请重新下载。")
                 stream, self.file = self.file, None
                 stream.close()
                 if self.received != self.release.size or self.hasher.hexdigest() != self.checksum:

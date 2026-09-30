@@ -98,7 +98,7 @@ class AlertEngine:
             self.history.pop(instrument, None)
             self.last_tick.pop(instrument, None)
 
-    def tick(self, instrument, price, now, *, max_gap=30):
+    def tick(self, instrument, price, now, *, max_gap: float = 30):
         history = self.history.setdefault(instrument, deque())
         if history and (now - history[-1][0] > max_gap or now < history[-1][0]):
             history.clear()
@@ -162,7 +162,7 @@ class AlertEngine:
             tail = complete[-21:]
             if any(not contiguous(a[0], b[0], condition.get("bar", "15m")) for a, b in zip(tail, tail[1:])):
                 return None
-            baseline = sum(number(row[5]) for row in complete[-21:-1]) / 20
+            baseline = sum((number(row[5]) for row in complete[-21:-1]), Decimal(0)) / 20
             return number(complete[-1][5]) / baseline if baseline > 0 else None
         if not account_fresh:
             return None

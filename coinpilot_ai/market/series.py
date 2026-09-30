@@ -2,6 +2,7 @@
 from array import array
 from dataclasses import dataclass, field
 from collections import deque
+from collections.abc import MutableSequence
 from time import perf_counter
 from PyQt6.QtCore import QObject, pyqtSignal
 from .buffer import CandleBuffer, ValueView
@@ -10,7 +11,7 @@ from .jobs import WorkQueue
 
 @dataclass(frozen=True)
 class SeriesChange:
-    pair: tuple
+    pair: tuple[str, str]
     revision: int
     first: int | None
     last: int | None
@@ -19,8 +20,8 @@ class SeriesChange:
 @dataclass
 class SeriesData:
     rows: CandleBuffer = field(default_factory=CandleBuffer)
-    emas: list = field(default_factory=list)
-    periods: tuple = ()
+    emas: list[MutableSequence[float]] = field(default_factory=list)
+    periods: tuple[int, ...] = ()
 
     @property
     def times(self):
@@ -48,10 +49,11 @@ class ChartSeries(QObject):
         self.source = CandleBuffer()
         self.job = self.pending = None
         self.generation = 0
-        self.worker = getattr(getattr(parent, "service", None), "compute", None)
-        if self.worker is None:
-            self.worker = WorkQueue(self)
-            self.destroyed.connect(lambda _, worker=self.worker: worker.close())
+        worker = getattr(getattr(parent, "service", None), "compute", None)
+        if worker is None:
+            worker = WorkQueue(self)
+            self.destroyed.connect(lambda _, worker=worker: worker.close())
+        self.worker: WorkQueue = worker
 
     def cancel(self):
         self.generation += 1

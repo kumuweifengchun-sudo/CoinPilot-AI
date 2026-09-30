@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QScrollArea, QSizePolicy, QSpinBox, QVBoxLayout, QWidget,
 )
 
+from coinpilot_ai.ui.qt import require
 from coinpilot_ai.core.config import DEFAULT_CONFIG, PROXY_LABELS, SOURCE_LABELS, normalize_hotkey, normalize_proxy_host, normalize_symbol
 from coinpilot_ai.desktop.visuals import Quote, draw_ticker, ticker_size
 from coinpilot_ai.ui.typography import font, render_hints
@@ -23,7 +24,8 @@ class Preview(QWidget):
         self.setMinimumHeight(76)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
-    def paintEvent(self, event):
+    def paintEvent(self, a0):
+        event = require(a0)
         quote = Quote(self.config["symbol1"] or "BTCUSDT", Decimal("68432.18"))
         precision = self.config["decimals1"]
         mini = self.config.get("mini_mode", True)
@@ -67,7 +69,7 @@ class SettingsDialog(QDialog):
         events.changed.connect(self._theme_changed)
         self._refresh_preview()
         self.owner.client.icons_finished.connect(self._icons_finished)
-        area = self.screen().availableGeometry()
+        area = require(self.screen()).availableGeometry()
         self.resize(min(400, area.width() - 32), min(560, area.height() - 64))
 
     def _card(self, layout, title, toggle=None, extra_toggle=None):
@@ -99,17 +101,17 @@ class SettingsDialog(QDialog):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        self.scroll = QScrollArea()
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         content = QWidget()
         content.setObjectName("content")
         body = QVBoxLayout(content)
         body.setContentsMargins(12, 10, 12, 10)
         body.setSpacing(10)
-        self.scroll.setWidget(content)
-        root.addWidget(self.scroll, 1)
+        self.scroll_area.setWidget(content)
+        root.addWidget(self.scroll_area, 1)
 
         header = QHBoxLayout()
         titles = QVBoxLayout()

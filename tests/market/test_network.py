@@ -131,7 +131,7 @@ def png_bytes():
     buffer = QBuffer()
     buffer.open(QIODevice.OpenModeFlag.WriteOnly)
     image.save(buffer, "PNG")
-    return bytes(buffer.data())
+    return buffer.data().data()
 
 
 def test_icons_validate_cache_and_report_fallback(client, tmp_path):

@@ -1,4 +1,5 @@
 import math
+from coinpilot_ai.ui.qt import require
 
 from coinpilot_ai.charts.regions import enclosed_region
 
@@ -12,7 +13,7 @@ def test_bounded_face_from_crossing_lines_and_subdivision():
              ((0, 10), (1, 10), -math.inf, math.inf),
              ((0, -5), (20, 15), 0, 1), ((20, -5), (0, 15), 0, 1)]
     face = enclosed_region(lines, (10, 2))
-    assert set(face) == {(5, 0), (15, 0), (10, 5)}
+    assert set(require(face)) == {(5, 0), (15, 0), (10, 5)}
     assert enclosed_region(lines, (2, 2)) is None
 
 
@@ -29,4 +30,4 @@ def test_overlapping_edges_dangling_lines_and_nested_contours():
     assert enclosed_region(square, (5, 5))
     assert enclosed_region(square, (12, 12)) is None
     square += edges([(3, 3), (7, 3), (7, 7), (3, 7)])
-    assert set(enclosed_region(square, (5, 5))) == {(3, 3), (7, 3), (7, 7), (3, 7)}
+    assert set(require(enclosed_region(square, (5, 5)))) == {(3, 3), (7, 3), (7, 7), (3, 7)}

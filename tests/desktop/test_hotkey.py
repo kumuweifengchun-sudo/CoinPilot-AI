@@ -66,6 +66,7 @@ def test_native_message_dispatch_and_closed_callbacks(app):
     hotkey = GlobalHotkey(lambda: results.append(True), api=FakeAPI())
     hotkey.change("Alt+Z")
     message = wintypes.MSG()
+    assert hotkey.active_id is not None
     message.message, message.wParam = 0x0312, hotkey.active_id
     assert hotkey.nativeEventFilter(b"windows_dispatcher_MSG", ctypes.addressof(message)) == (True, 0)
     QTest.qWait(10)

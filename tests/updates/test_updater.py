@@ -1,4 +1,5 @@
 """更新使用本地 HTTP 和临时文件验证；不下载公网安装器、不执行安装。"""
+from coinpilot_ai.ui.qt import require
 from copy import deepcopy
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -116,7 +117,7 @@ def release_server(app, tmp_path):
             except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                 pass
 
-        def log_message(self, *_):
+        def log_message(self, format, *args):
             pass
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -126,11 +127,11 @@ def release_server(app, tmp_path):
               payload["assets"][1]["browser_download_url"]: "/sha", "https://release-assets.githubusercontent.com/test": "/binary"}
 
     class LocalManager(QNetworkAccessManager):
-        def get(self, request):
+        def get(self, request, data=None):
             # 只在测试中将已校验的生产 URL 映射到本机 HTTP；生产下载器没有禁用 TLS 的选项。
             request = QNetworkRequest(request)
             request.setUrl(QUrl(f"http://127.0.0.1:{server.server_port}"+routes[request.url().toString()]))
-            return super().get(request)
+            return super().get(request) if data is None else super().get(request, data)
 
     manager = LocalManager()
     client = UpdateClient(tmp_path/"updates", {"proxy_enabled": False}, manager=manager, current="0.1.0")
@@ -226,6 +227,7 @@ class Owner(QWidget):
 
 
 class ApplicationStub(QObject):
+    desktop: SimpleNamespace | None = None
     aboutToQuit = pyqtSignal()
 
     def __init__(self):
@@ -279,9 +281,9 @@ def test_release_notes_are_plain_text_and_source_cannot_install(app, tmp_path):
     controller.client._state("available", "测试发行版")
     controller.open()
     try:
-        assert controller.dialog.notes.toPlainText().startswith("<img")
+        assert require(controller.dialog).notes.toPlainText().startswith("<img")
         controller.client._state("ready", "已校验")
-        assert not controller.dialog.action.isEnabled()
+        assert not require(controller.dialog).action.isEnabled()
         controller.prepare_install()
         assert controller.helper is None and application.quits == 0
     finally:

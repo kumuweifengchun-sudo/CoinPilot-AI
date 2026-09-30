@@ -73,8 +73,10 @@ class IndicatorConditionDialog(QDialog):
         fields = {}
         for key, value in DEFAULTS[kind].items():
             field = QDoubleSpinBox() if key in ("deviations", "multiplier") else QSpinBox()
-            field.setRange(.01 if isinstance(field, QDoubleSpinBox) else 1,
-                           100 if isinstance(field, QDoubleSpinBox) else 1000)
+            if isinstance(field, QDoubleSpinBox):
+                field.setRange(.01, 100)
+            else:
+                field.setRange(1, 1000)
             field.setValue(value)
             fields[key] = field
             form.addRow(key, field)

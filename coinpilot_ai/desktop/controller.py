@@ -4,6 +4,7 @@ import sqlite3
 from PyQt6.QtCore import QEvent, QObject, Qt, QTimer
 from PyQt6.QtWidgets import QApplication, QHBoxLayout, QLabel, QMenu, QPushButton, QSystemTrayIcon, QVBoxLayout, QWidget
 
+from coinpilot_ai.ui.qt import require
 from coinpilot_ai.ui.icons import tray_icon, icon
 from coinpilot_ai.ui.theme import color, events, menu_style, style_sheet
 from coinpilot_ai.application.service import CockpitService
@@ -72,24 +73,24 @@ class DesktopController(QObject):
         self.menu = QMenu()
         self.menu.setStyleSheet(menu_style())
         events.changed.connect(self.refresh_theme)
-        self.status_action = self.menu.addAction("后台运行")
+        self.status_action = require(self.menu.addAction("后台运行"))
         self.status_action.setEnabled(False)
         self.menu.addSeparator()
-        self.workbench_action = self.menu.addAction("交易台", self.open_workbench)
+        self.workbench_action = require(self.menu.addAction("交易台", self.open_workbench))
         self.workbench_action.setIcon(icon("workbench"))
         self.menu.setDefaultAction(self.workbench_action)
-        self.visibility_action = self.menu.addAction("显示小窗", widget.toggle_visibility)
-        self.settings_action = self.menu.addAction("设置", widget.open_settings)
+        self.visibility_action = require(self.menu.addAction("显示小窗", widget.toggle_visibility))
+        self.settings_action = require(self.menu.addAction("设置", widget.open_settings))
         self.settings_action.setIcon(icon("settings"))
         if updater is not None:
-            self.update_action = self.menu.addAction("检查更新", updater.open)
+            self.update_action = require(self.menu.addAction("检查更新", updater.open))
             updater.notice.connect(lambda text: self.tray.showMessage("CoinPilot AI · 发现新版本", text))
-        self.pause_action = self.menu.addAction("暂停通知")
+        self.pause_action = require(self.menu.addAction("暂停通知"))
         self.pause_action.setIcon(icon("bell-off"))
         self.pause_action.setCheckable(True)
         self.pause_action.toggled.connect(self.pause_notifications)
         self.menu.addSeparator()
-        self.quit_action = self.menu.addAction("退出程序", app.quit)
+        self.quit_action = require(self.menu.addAction("退出程序", app.quit))
         self.quit_action.setIcon(icon("power"))
         self.tray.setContextMenu(self.menu)
         self.update_tray()
@@ -126,7 +127,9 @@ class DesktopController(QObject):
         app.installEventFilter(self)
         app.aboutToQuit.connect(self.close)
 
-    def eventFilter(self, watched, event):
+    def eventFilter(self, a0, a1):
+        watched = a0
+        event = require(a1)
         if watched is self.app and event.type() == QEvent.Type.Quit and self.window is not None:
             self.window.exiting = True
         return False
@@ -197,6 +200,8 @@ class DesktopController(QObject):
         self.update_tray()
 
     def updated(self, kind):
+        if self.service is None:
+            return
         if kind == "settings":
             self.pause_action.blockSignals(True)
             self.pause_action.setChecked(self.service.settings.get("notifications_paused", False))
@@ -210,6 +215,8 @@ class DesktopController(QObject):
         self.update_tray()
 
     def notify(self, key, event):
+        if self.service is None:
+            return
         self.widget.set_unread_events(self.widget.unread_events + 1)
         self.update_tray()
         if self.service.settings.get("notifications_paused"):

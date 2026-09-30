@@ -7,6 +7,7 @@ from PyQt6.QtCore import QDateTime, Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (QButtonGroup, QComboBox, QHBoxLayout, QLabel, QMenu, QPushButton, QScrollArea, QSizePolicy, QSplitter,
                             QToolButton, QVBoxLayout, QWidget)
 
+from coinpilot_ai.ui.qt import require
 from .canvas import CandleChart
 from .dialogs import DateJumpDialog, EmaDialog, ObjectsDialog, edit_drawing
 from .settings import IndicatorSettingsDialog
@@ -106,9 +107,9 @@ class ChartPanel(QWidget):
         for title, names in (("秒 / 分钟 / 小时", [b for b in BARS if BARS[b] < 21600]),
                              ("UTC+8 开盘", [b for b in BARS if BARS[b] >= 21600 and not b.endswith("utc")]),
                              ("UTC+0 开盘", [b for b in BARS if b.endswith("utc")])):
-            menu = period_menu.addMenu(title)
+            menu = require(period_menu.addMenu(title))
             for bar in names:
-                action = menu.addAction(bar, lambda checked=False, b=bar: self.select_bar(b))
+                action = require(menu.addAction(bar, lambda checked=False, b=bar: self.select_bar(b)))
                 action.setCheckable(True)
                 self.period_actions[bar] = action
         self.period_menu_button.setMenu(period_menu)
@@ -129,7 +130,7 @@ class ChartPanel(QWidget):
         tools_menu = QMenu(self)
         tools_menu.setObjectName("chartDrawingTools")
         for key, name in TOOLS.items():
-            action = tools_menu.addAction(name, lambda checked=False, k=key: self.choose_tool(k))
+            action = require(tools_menu.addAction(name, lambda checked=False, k=key: self.choose_tool(k)))
             action.setIcon(icon(key))
         tools_button = self.small_button("绘图", lambda: None)
         tools_button.setMenu(tools_menu)
@@ -213,7 +214,7 @@ class ChartPanel(QWidget):
         self.canvas.selection_changed.connect(self.update_status)
         # 左侧工具栏在紧凑窗口里可滚动；顶部绘图菜单始终提供相同开关。
         tools_menu.addSeparator()
-        self.magnet_action = tools_menu.addAction("K 线高低点磁吸")
+        self.magnet_action = require(tools_menu.addAction("K 线高低点磁吸"))
         self.magnet_action.setIcon(icon("magnet"))
         self.magnet_action.setCheckable(True)
         self.magnet_action.setChecked(self.canvas.magnet_enabled)
@@ -374,7 +375,7 @@ class ChartPanel(QWidget):
 
     def rebuild_indicator_strips(self):
         while self.indicator_layout.count():
-            child = self.indicator_layout.takeAt(0).widget()
+            child = require(self.indicator_layout.takeAt(0)).widget()
             if child is not None:
                 child.deleteLater()
         self.indicator_strips = []
@@ -588,12 +589,14 @@ class ChartPanel(QWidget):
             self.status.setText(status)
         self.status.setToolTip(full+"\n空白拖动平移 · 滚轮缩放 · 拖动右侧价格轴拉伸 · 点击 EMA 图例编辑")
 
-    def showEvent(self, event):
+    def showEvent(self, a0):
+        event = require(a0)
         super().showEvent(event)
         self.pending_kinds.add("show")
         self.flush_refresh()
 
-    def hideEvent(self, event):
+    def hideEvent(self, a0):
+        event = require(a0)
         self.service.chart_feed.set_view(self.view_owner)
         self.refresh_timer.stop()
         self.range_timer.stop()

@@ -5,6 +5,7 @@ from PyQt6.QtCore import QDateTime, Qt
 from PyQt6.QtWidgets import (QAbstractItemView, QDateTimeEdit, QHBoxLayout, QLabel,
     QListWidget, QListWidgetItem, QSplitter, QTabWidget, QVBoxLayout, QWidget)
 
+from coinpilot_ai.ui.qt import require
 from coinpilot_ai.core.store import encode
 from coinpilot_ai.ui.common import button, fill_table, selected_id, show_text, table, timestamp
 from .ai_panel import AiPanel
@@ -74,7 +75,7 @@ class ReviewPage(QWidget):
 
     def context(self):
         begin, end = self.range()
-        keys = [self.trade_table.item(index.row(), 0).data(Qt.ItemDataRole.UserRole) for index in self.trade_table.selectionModel().selectedRows()]
+        keys = [require(self.trade_table.item(index.row(), 0)).data(Qt.ItemDataRole.UserRole) for index in require(self.trade_table.selectionModel()).selectedRows()]
         return self.service.review_context(keys, begin, end)
 
     def refresh(self):

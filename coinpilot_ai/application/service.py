@@ -126,7 +126,7 @@ class CockpitService(QObject):
             self.account_error = str(exc)
         fingerprint = hashlib.sha256(credentials.get("key", "unconfigured").encode()).hexdigest()[:16]
         self.scope = self.environment + ":" + fingerprint
-        self.api = OkxClient(self.transport, credentials, self.environment)
+        self.api: OkxClient | PaperBroker = OkxClient(self.transport, credentials, self.environment)
         if self.environment == 'paper':
             self.scope = PaperBroker.SCOPE
             self.api = PaperBroker(self.store, self.api, lambda: self.specs, lambda: self.quotes,
@@ -151,7 +151,7 @@ class CockpitService(QObject):
         return {'paper': '本地模拟', 'demo': '模拟环境', 'live': '真实环境'}[self.environment]
 
     def _paper_changed(self):
-        if not self.closed and self.environment == 'paper':
+        if not self.closed and isinstance(self.api, PaperBroker):
             self.refresh_account()
             changes, self.api.order_changes = self.api.order_changes, []
             for order in changes:
@@ -212,7 +212,7 @@ class CockpitService(QObject):
             self.quotes[inst] = {"instrument": inst, "price": str(price), "source": "okx", "time": server_time, "received_at": now}
             self.engine.tick(inst, price, server_time)
             self.market_error = ""
-            if self.environment == 'paper':
+            if isinstance(self.api, PaperBroker):
                 try:
                     self.api.match(inst)
                     self.refresh_account()
@@ -559,7 +559,7 @@ class CockpitService(QObject):
         payload = draft.payload(self.specs.get(draft.instrument, {}), self.account, self.positions,
                                 self.quotes.get(draft.instrument), time.time(), client_id,
                                 paper=self.environment == 'paper')
-        if self.environment == 'paper':
+        if isinstance(self.api, PaperBroker):
             self.api.validate(payload)
         return payload
 

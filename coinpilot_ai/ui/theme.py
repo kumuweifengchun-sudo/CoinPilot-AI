@@ -97,7 +97,7 @@ def activate_theme(theme_id: str) -> str:
     changed = selected != _active_id
     _active_id = selected
     app = QApplication.instance()
-    if app is not None:
+    if isinstance(app, QApplication):
         app.setPalette(palette())
         if changed:
             app.setStyleSheet(style_sheet())

@@ -21,6 +21,7 @@ def protective_exit(opened, high, low, stop, target, *, long):
     if not (hit_stop or hit_target):
         return None
     if hit_stop:
+        assert stop is not None
         price = min(opened, stop) if long else max(opened, stop)
         return price, "stop", bool(hit_target)
     return target, "target", False

@@ -1,4 +1,6 @@
+from coinpilot_ai.ui.qt import require
 from decimal import Decimal
+import time
 
 import pytest
 from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, Qt, pyqtSignal
@@ -11,6 +13,7 @@ from coinpilot_ai.desktop.settings import SettingsDialog
 from coinpilot_ai.ui.typography import FONT_FAMILY, font
 from coinpilot_ai.desktop.visuals import Quote, draw_ticker, ticker_size
 from coinpilot_ai.desktop.widget import CoinPilotWidget
+from coinpilot_ai.desktop.single_instance import SingleInstance
 
 
 class StubClient(QObject):
@@ -47,6 +50,18 @@ def test_bundled_inter_font_is_used(app):
     assert app.inter_font_loaded
     assert QFontInfo(app.font()).family() == FONT_FAMILY
     assert QFontInfo(font(12, True, latin=True)).family() == FONT_FAMILY
+
+
+def test_single_instance_controller_preserves_qt_instance_method(app, tmp_path):
+    controller = SingleInstance(app, namespace=f"qa:{tmp_path}")
+    app.single_instance = controller
+    try:
+        assert app.instance() is app
+        assert app.single_instance is controller
+    finally:
+        del app.single_instance
+        controller.close()
+        controller.deleteLater()
 
 
 @pytest.fixture
@@ -148,7 +163,10 @@ def test_width_does_not_shrink_with_small_prices_or_rotation(widget, app):
     width = widget.width()
     widget._price_ready("BTCUSDT", Decimal("1"), "")
     widget.start_slide()
-    QTest.qWait(320)
+    deadline = time.monotonic() + 1
+    while widget.animation.state() != widget.animation.State.Stopped and time.monotonic() < deadline:
+        QTest.qWait(5)
+    assert widget.animation.state() == widget.animation.State.Stopped
     assert widget.width() == width
     assert widget.progress == 1
 
@@ -347,7 +365,8 @@ def test_startup_checkbox_cancel_enable_disable_and_failure(widget, monkeypatch)
     from coinpilot_ai.desktop.startup import StartupManager
     from test_startup import FakeRegistry
     monkeypatch.setattr("coinpilot_ai.desktop.startup.startup_command", lambda *_: "coinpilot-ai.exe")
-    widget.startup = StartupManager(widget.store.path, widget.store.path.parent, registry=FakeRegistry())
+    registry = FakeRegistry()
+    widget.startup = StartupManager(widget.store.path, widget.store.path.parent, registry=registry)
     dialog = SettingsDialog(widget)
     assert not dialog.startup_check.isChecked()
     dialog.startup_check.setChecked(True)
@@ -366,12 +385,12 @@ def test_startup_checkbox_cancel_enable_disable_and_failure(widget, monkeypatch)
     dialog.show()
     assert dialog.startup_check.isChecked()
     dialog.startup_check.setChecked(False)
-    widget.startup.registry.fail_write = True
+    registry.fail_write = True
     dialog._save()
     assert dialog.isVisible()
     assert "开机启动项" in dialog.feedback.text()
     assert widget.startup.read() is not None
-    widget.startup.registry.fail_write = False
+    registry.fail_write = False
     dialog._save()
     assert widget.startup.read() is None
     assert dialog.result() == QDialog.DialogCode.Accepted

@@ -3,21 +3,68 @@ from bisect import bisect_left, bisect_right
 from copy import deepcopy
 from decimal import Decimal, ROUND_HALF_UP
 import math
+from typing import TYPE_CHECKING, Literal, TypedDict
+
+if TYPE_CHECKING:
+    from coinpilot_ai.application.service import CockpitService
 
 from PyQt6.QtCore import QPointF, QRect, QRectF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import QApplication, QColorDialog, QInputDialog, QMenu, QToolTip, QWidget
 
+from coinpilot_ai.ui.qt import require
 from coinpilot_ai.market.intervals import BARS, shift
 from coinpilot_ai.market.lod import MAX_VIEW_BARS
 from coinpilot_ai.market.buffer import CandleBuffer, ValueView
-from coinpilot_ai.charts.state import default_emas, drawing, ema_values, name_drawings
+from coinpilot_ai.charts.state import Drawing, ChartBook, IndicatorSetting, default_emas, drawing, ema_values, name_drawings
 from coinpilot_ai.charts.position import POSITION_TOOLS, position_metrics, position_price
 from coinpilot_ai.charts.pattern import capture_pattern, projected_prices
-from .render import ChartRenderer
+from .render import ChartRenderer, MarketLayerKey, ObjectLayerKey
 from .regions import enclosed_region
 from coinpilot_ai.market.indicators import IndicatorResult, calculate
 from coinpilot_ai.ui.theme import events
+
+
+class PanDrag(TypedDict):
+    mode: Literal["pan"]
+    pos: QPointF
+    left: float
+    low: float
+    high: float
+
+
+class PriceDrag(TypedDict):
+    mode: Literal["price"]
+    pos: QPointF
+    low: float
+    high: float
+
+
+class TimeDrag(TypedDict):
+    mode: Literal["time"]
+    pos: QPointF
+    left: float
+    count: float
+
+
+class VolumeDrag(TypedDict):
+    mode: Literal["volume"]
+    pos: QPointF
+    ratio: float
+
+
+class ObjectDrag(TypedDict):
+    mode: Literal["object"]
+    pos: QPointF
+    before: Drawing
+    handle: int | None
+
+
+class PatternDrag(TypedDict):
+    mode: Literal["pattern_select"]
+
+
+DragState = PanDrag | PriceDrag | TimeDrag | VolumeDrag | ObjectDrag | PatternDrag
 
 
 class CandleChart(ChartRenderer, QWidget):
@@ -34,20 +81,23 @@ class CandleChart(ChartRenderer, QWidget):
     risk_requested = pyqtSignal(str, str, str)
     SNAP_RADIUS = 14.  # Qt 逻辑像素；所有缩放和 DPI 下具有相同的操作距离。
 
-    def __init__(self, service=None, parent=None):
+    def __init__(self, service: "CockpitService | None" = None, parent=None):
         super().__init__(parent)
         self.service = service
-        self.book = service.chart_book if service else None
+        self.book: ChartBook | None = service.chart_book if service else None
         self.environment, self.instrument, self.bar = "demo", "BTC-USDT-SWAP", "15m"
         self.rows, self.values, self.times, self.ema_cache = [], [], [], []
         self.emas = deepcopy(self.book.emas if self.book else default_emas())
         self.indicator_results = []
-        self.indicators_override = None
-        self.view_key = None
-        self.objects, self.hit_paths = [], {}
+        self.indicators_override: list[IndicatorSetting] | None = None
+        self.view_key: str | None = None
+        self.objects: list[Drawing] = []
+        self.hit_paths = {}
         self.selected_id = None
         self.tool = "cursor"
-        self.preview = self.pointer = self.drag = None
+        self.preview: Drawing | None = None
+        self.pointer: QPointF | None = None
+        self.drag: DragState | None = None
         self.pattern_selection = None
         self.pending_draw = None
         self.position_stage = 0
@@ -55,12 +105,12 @@ class CandleChart(ChartRenderer, QWidget):
         self.draw_click_timer.setSingleShot(True)
         self.draw_click_timer.setTimerType(Qt.TimerType.PreciseTimer)
         self.draw_click_timer.timeout.connect(self.finish_pending_draw)
-        self.snap_target = None
+        self.snap_target: tuple[float, float, str] | None = None
         self.external_crosshair_time = None
         self.magnet_enabled = self.book.magnet_enabled if self.book else True
         self.overlays = []
         self.account_stale = False
-        self.last_price = None
+        self.last_price: float | None = None
         self.price_stale = True
         self.title = "等待 OKX K 线"
         self.count, self.left_time = 100., None
@@ -72,7 +122,9 @@ class CandleChart(ChartRenderer, QWidget):
         self._series = None
         self._series_revision = -1
         self._plot_revision = self._theme_revision = 0
-        self._market_key = self._objects_key = self._fit_key = None
+        self._market_key: MarketLayerKey | None = None
+        self._objects_key: ObjectLayerKey | None = None
+        self._fit_key = None
         self._fixed_hit_paths = {}
         self.market_builds = self.object_builds = 0
         self.frame_timer = QTimer(self)
@@ -133,6 +185,8 @@ class CandleChart(ChartRenderer, QWidget):
         self.view_changed.emit()
 
     def book_changed(self, kind, key):
+        if self.book is None:
+            return
         if kind == "ema":
             if self._series is None:
                 self.emas = deepcopy(self.book.emas)
@@ -157,7 +211,7 @@ class CandleChart(ChartRenderer, QWidget):
         self.update()
 
     def save_view(self):
-        if not self.book or not self.times or self.service.closed:
+        if not self.book or not self.times or (self.service is not None and self.service.closed):
             return
         self._saving = True
         try:
@@ -178,7 +232,7 @@ class CandleChart(ChartRenderer, QWidget):
             self.save_view()
 
     def persist_objects(self):
-        if self.book and not self.service.closed:
+        if self.book and self.service is not None and not self.service.closed:
             self.book.save_objects(self.environment, self.instrument, self.objects)
         elif not self.book:
             name_drawings(self.objects)
@@ -327,26 +381,26 @@ class CandleChart(ChartRenderer, QWidget):
             pad = max((high-low)*.08, abs(high)*.0001, 1e-10)
             self.low, self.high = low-pad, high+pad
 
-    def x(self, stamp):
+    def time_x(self, stamp):
         main, _ = self.plot_rects()
         return main.left() + (self.index_at(stamp)-self.left_index()+.5*self.render_interval/self.interval)*main.width()/self.count
 
-    def y(self, price):
+    def price_y(self, price):
         main, _ = self.plot_rects()
         return main.bottom() - (price-self.low)/max(1e-14, self.high-self.low)*main.height()
 
-    def anchor(self, position):
+    def anchor(self, position) -> list[float]:
         main, _ = self.plot_rects()
         index = self.left_index() + (position.x()-main.left())/main.width()*self.count-.5*self.render_interval/self.interval
         price = self.low + (main.bottom()-position.y())/main.height()*(self.high-self.low)
         return [self.time_at(index), price]
 
     def point(self, anchor):
-        return QPointF(self.x(anchor[0]), self.y(anchor[1]))
+        return QPointF(self.time_x(anchor[0]), self.price_y(anchor[1]))
 
     def set_magnet(self, enabled):
         if self.book:
-            if not self.service.closed:
+            if self.service is not None and not self.service.closed:
                 self.book.save_magnet(enabled)
         else:
             self.magnet_enabled = bool(enabled)
@@ -355,7 +409,7 @@ class CandleChart(ChartRenderer, QWidget):
             self.refresh_drawing_pointer()
         self.update()
 
-    def drawing_anchor(self, position, modifiers=Qt.KeyboardModifier.NoModifier):
+    def drawing_anchor(self, position, modifiers=Qt.KeyboardModifier.NoModifier) -> list[float]:
         """只为绘图锚点吸附高低价；视口平移和整对象平移仍使用普通反向坐标。"""
         self.snap_target = None
         self.fit_prices()
@@ -378,7 +432,7 @@ class CandleChart(ChartRenderer, QWidget):
                 if distance <= nearest:
                     nearest = distance
                     self.snap_target = (*target, kind)
-        return list(self.snap_target[:2]) if self.snap_target else raw
+        return [self.snap_target[0], self.snap_target[1]] if self.snap_target else raw
 
     def refresh_drawing_pointer(self, modifiers=None):
         if self.pointer is None:
@@ -449,7 +503,8 @@ class CandleChart(ChartRenderer, QWidget):
         self.follow = False
         self.change_view()
 
-    def wheelEvent(self, event):
+    def wheelEvent(self, a0):
+        event = require(a0)
         if self.times:
             self.zoom_time(math.exp(-event.angleDelta().y()/120*.16), event.position().x())
         event.accept()
@@ -464,7 +519,7 @@ class CandleChart(ChartRenderer, QWidget):
         self.setFocus()
         self.update()
 
-    def selected(self):
+    def selected(self) -> Drawing | None:
         return next((o for o in self.objects if o["id"] == self.selected_id), None)
 
     def delete_selected(self):
@@ -481,7 +536,7 @@ class CandleChart(ChartRenderer, QWidget):
             self.selection_changed.emit()
         return len(removed)
 
-    def hit_test(self, pos):
+    def hit_test(self, pos) -> tuple[str | None, int | None]:
         self.fit_prices()
         self.object_layers()
         obj = self.selected()
@@ -508,7 +563,7 @@ class CandleChart(ChartRenderer, QWidget):
         if nearest is None:
             return None
         step = self.plot_rects()[0].width()/self.count
-        return nearest if abs(self.x(self.times[nearest])-position.x()) <= max(6, step*.55) else None
+        return nearest if abs(self.time_x(self.times[nearest])-position.x()) <= max(6, step*.55) else None
 
     def pattern_anchor(self, position):
         stamp, price = self.anchor(position)
@@ -540,7 +595,8 @@ class CandleChart(ChartRenderer, QWidget):
         QToolTip.showText(self.mapToGlobal(position.toPoint()), "移动到目标日期，单击放置走势", self, QRect(), 2500)
         self.update()
 
-    def mousePressEvent(self, event):
+    def mousePressEvent(self, a0):
+        event = require(a0)
         self.setFocus()
         if event.button() != Qt.MouseButton.LeftButton or not self.times:
             return
@@ -556,7 +612,7 @@ class CandleChart(ChartRenderer, QWidget):
             if self.preview is not None:
                 anchor = self.pattern_anchor(pos)
                 try:
-                    projected_prices(self.preview["closes"], anchor[1])
+                    projected_prices(self.preview.get("closes", []), anchor[1])
                 except ValueError as exc:
                     QToolTip.showText(self.mapToGlobal(pos.toPoint()), str(exc), self, QRect(), 2500)
                     return
@@ -626,10 +682,12 @@ class CandleChart(ChartRenderer, QWidget):
                 self.preview['notional_usdt'] = ''
                 self.position_stage = 1
             elif self.position_stage == 1:
+                assert self.preview is not None
                 self.preview['anchors'][1] = [max(a[0], self.preview['anchors'][0][0]+self.interval), a[1]]
                 self.preview['anchors'][2] = [self.preview['anchors'][1][0], self.preview['anchors'][0][1]]
                 self.position_stage = 2
             else:
+                assert self.preview is not None
                 from .dialogs import DrawingDialog
                 self.preview['anchors'][2] = [self.preview['anchors'][1][0], a[1]]
                 obj = self.preview
@@ -665,11 +723,12 @@ class CandleChart(ChartRenderer, QWidget):
         # 完成当前对象后清空预览，保留工具，下一次点击开始新的对象。
         self.set_tool(self.tool)
 
-    def mouseMoveEvent(self, event):
+    def mouseMoveEvent(self, a0):
+        event = require(a0)
         pos = event.position()
         self.pointer = pos
         main, _ = self.plot_rects()
-        if self.times and main.left() <= pos.x() <= main.right():
+        if self.times and self.left_time is not None and main.left() <= pos.x() <= main.right():
             stamp = self.left_time + (pos.x()-main.left())/main.width()*self.count*self.interval
             self.crosshair_changed.emit(stamp)
         else:
@@ -677,6 +736,7 @@ class CandleChart(ChartRenderer, QWidget):
         self.snap_target = None
         if self.tool == "price_pattern":
             if self.drag and self.drag["mode"] == "pattern_select":
+                assert self.pattern_selection is not None
                 index = self.pattern_index(pos)
                 if index is not None:
                     self.pattern_selection = (self.pattern_selection[0], self.times[index])
@@ -688,7 +748,7 @@ class CandleChart(ChartRenderer, QWidget):
                 return
         if self.tool != "cursor" and not self.drag:
             self.refresh_drawing_pointer(event.modifiers())
-        if self.drag:
+        if self.drag and self.drag["mode"] != "pattern_select":
             d = self.drag
             dx, dy = pos.x()-d["pos"].x(), pos.y()-d["pos"].y()
             if d["mode"] == "pan":
@@ -734,15 +794,17 @@ class CandleChart(ChartRenderer, QWidget):
                 self.view_changed.emit()
         self.request_frame()
 
-    def mouseReleaseEvent(self, event):
+    def mouseReleaseEvent(self, a0):
+        event = require(a0)
         if self.drag and self.drag["mode"] == "pattern_select" and event.button() == Qt.MouseButton.LeftButton:
             self.mouseMoveEvent(event)
             self.finish_pattern_selection(event.position())
             return
         if self.drag and event.button() == Qt.MouseButton.LeftButton:
             self.mouseMoveEvent(event)
-            mode = self.drag["mode"]
-            if mode == 'object':
+            drag = self.drag
+            mode = drag["mode"]
+            if drag["mode"] == 'object':
                 obj = self.selected()
                 if obj and obj['tool'] in POSITION_TOOLS:
                     try:
@@ -751,19 +813,20 @@ class CandleChart(ChartRenderer, QWidget):
                             anchor[1] = float(position_price(anchor[1], spec.get('tickSz')))
                         position_metrics(obj)
                     except ValueError:
-                        obj.update(deepcopy(self.drag['before']))
+                        obj.update(deepcopy(drag['before']))
                 elif obj and obj['tool'] == "price_pattern":
                     try:
-                        projected_prices(obj["closes"], obj["anchors"][0][1])
+                        projected_prices(obj.get("closes", []), obj["anchors"][0][1])
                     except ValueError:
-                        obj.update(deepcopy(self.drag['before']))
+                        obj.update(deepcopy(drag['before']))
             self.drag = None
             self.snap_target = None
             self.persist_objects() if mode == "object" else self.change_view()
             if mode == 'object':
                 self.selection_changed.emit()
 
-    def mouseDoubleClickEvent(self, event):
+    def mouseDoubleClickEvent(self, a0):
+        event = require(a0)
         if event.button() != Qt.MouseButton.LeftButton or not self.times:
             return
         main, volume = self.plot_rects()
@@ -801,7 +864,7 @@ class CandleChart(ChartRenderer, QWidget):
 
     def copy_price(self, price, position):
         if price is not None:
-            QApplication.clipboard().setText(price)
+            require(QApplication.clipboard()).setText(price)
             QToolTip.showText(self.mapToGlobal(position.toPoint()), '已复制 '+price, self, QRect(), 1000)
 
     def region_at(self, position):
@@ -851,12 +914,12 @@ class CandleChart(ChartRenderer, QWidget):
             if self.service:
                 menu.addAction('提醒…', lambda: self.price_alert_requested.emit(environment, instrument, price))
                 menu.addAction('多／空仓位测算…', lambda: self.risk_requested.emit(environment, instrument, price))
-                orders = menu.addMenu('快捷下单')
+                orders = require(menu.addMenu('快捷下单'))
                 for direction, label in (('long', '限价开多…'), ('short', '限价开空…')):
                     orders.addAction(label, lambda checked=False, d=direction: self.order_requested.emit(environment, instrument, price, d))
             region = self.region_at(position)
             context = self.environment, self.instrument, self.bar
-            fill = menu.addAction('封闭区域填色…', lambda: self.fill_region(region, context))
+            fill = require(menu.addAction('封闭区域填色…', lambda: self.fill_region(region, context)))
             fill.setEnabled(region is not None)
             menu.addSeparator()
         obj = self.selected()
@@ -866,19 +929,21 @@ class CandleChart(ChartRenderer, QWidget):
                 obj["locked"] = not obj["locked"]
                 self.persist_objects()
             menu.addAction("解锁" if obj["locked"] else "锁定", toggle)
-            action = menu.addAction("删除", self.delete_selected)
+            action = require(menu.addAction("删除", self.delete_selected))
             action.setEnabled(not obj["locked"])
             menu.addSeparator()
         menu.addAction("恢复自动价格范围", self.auto)
         menu.addAction("返回最新 K 线", self.latest)
         return menu
 
-    def contextMenuEvent(self, event):
+    def contextMenuEvent(self, a0):
+        event = require(a0)
         menu = self.context_menu(QPointF(event.pos()))
         menu.exec(event.globalPos())
         menu.deleteLater()
 
-    def keyPressEvent(self, event):
+    def keyPressEvent(self, a0):
+        event = require(a0)
         key, ctrl = event.key(), bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
         if key == Qt.Key.Key_Alt:
             self.refresh_drawing_pointer(Qt.KeyboardModifier.AltModifier)
@@ -897,19 +962,22 @@ class CandleChart(ChartRenderer, QWidget):
         else:
             super().keyPressEvent(event)
 
-    def keyReleaseEvent(self, event):
+    def keyReleaseEvent(self, a0):
+        event = require(a0)
         if event.key() == Qt.Key.Key_Alt:
             self.refresh_drawing_pointer(event.modifiers() & ~Qt.KeyboardModifier.AltModifier)
         else:
             super().keyReleaseEvent(event)
 
-    def leaveEvent(self, event):
+    def leaveEvent(self, a0):
+        event = require(a0)
         self.pointer = None
         self.snap_target = None
         self.crosshair_changed.emit(None)
         self.update()
 
-    def hideEvent(self, event):
+    def hideEvent(self, a0):
+        event = require(a0)
         self.cancel_pending_draw()
         self.frame_timer.stop()
         self.flush_view()

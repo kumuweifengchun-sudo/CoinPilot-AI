@@ -38,7 +38,7 @@ def contrast_text_color(background):
     return QColor("#000000" if luminance > 0.179 else "#FFFFFF")
 
 
-def draw_price(painter, rect, text, *, align_left=False, background=None, background_offset=0):
+def draw_price(painter, rect, text, *, align_left=False, background=None, background_offset: float = 0):
     metrics = QFontMetricsF(painter.font(), painter.device())
     baseline = rect.center().y() + (metrics.ascent() - metrics.descent()) / 2
     x = rect.left() if align_left else rect.right() - price_text_width(text, metrics)
@@ -141,7 +141,7 @@ def ticker_size(quotes, decimals, size, mini=False, device=None):
 
 
 def draw_ticker(painter, rect, quote, precision, size, opacity, sample=False, mini=False,
-                price_background=None, background_offset=0):
+                price_background=None, background_offset: float = 0):
     from coinpilot_ai.ui.theme import color
     painter.save()
     render_hints(painter)

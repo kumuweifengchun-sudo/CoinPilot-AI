@@ -1,4 +1,9 @@
 """画布绘制与命中区域；绘制工作量只与可见蜡烛及绘图对象有关。"""
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from .canvas import CandleChart
+
 from datetime import datetime
 from math import ceil
 from bisect import bisect_left, bisect_right
@@ -14,15 +19,23 @@ from .position import POSITION_TOOLS, position_metrics
 from .pattern import projected_prices
 
 
+type LayerKey = tuple[int, int, float, str, int, str, float | None, float, float, float, float, int]
+type MarketLayerKey = tuple[LayerKey, int, tuple[tuple[tuple[str, object], ...], ...], float]
+type ObjectLayerKey = tuple[LayerKey, str | None, str]
+
+
 class ChartRenderer:
+    """CandleChart 的绘制混入，使用画布提供的几何和状态。"""
+
     def draw_pattern_selection(self, p, main):
+        self = cast("CandleChart", self)
         selection = self.pattern_selection
         if selection is None or not self.times:
             return
         first, last = sorted(selection)
         step = main.width()/self.count
-        left = self.x(first)-step*.5
-        right = self.x(last)+step*.5
+        left = self.time_x(first)-step*.5
+        right = self.time_x(last)+step*.5
         shade = QColor(color("focus"))
         shade.setAlpha(45)
         p.save()
@@ -34,6 +47,7 @@ class ChartRenderer:
         p.restore()
 
     def draw_pattern_object(self, p, obj, main):
+        self = cast("CandleChart", self)
         try:
             start, anchor_price = obj["anchors"][0]
             prices = projected_prices(obj["closes"], float(anchor_price))
@@ -44,7 +58,7 @@ class ChartRenderer:
             return
         path = QPainterPath()
         for index, price in enumerate(prices):
-            point = QPointF(self.x(start+index*interval), self.y(price))
+            point = QPointF(self.time_x(start+index*interval), self.price_y(price))
             if index:
                 path.lineTo(point)
             else:
@@ -63,10 +77,11 @@ class ChartRenderer:
         if obj["id"] == self.selected_id:
             p.setBrush(QColor(color("surface")))
             p.setPen(QPen(QColor(color("text_secondary")), 1))
-            p.drawEllipse(QPointF(self.x(start), self.y(anchor_price)), 4, 4)
+            p.drawEllipse(QPointF(self.time_x(start), self.price_y(anchor_price)), 4, 4)
             p.setBrush(Qt.BrushStyle.NoBrush)
 
     def object_path(self, obj):
+        self = cast("CandleChart", self)
         main, _ = self.plot_rects()
         points = [self.point(a) for a in obj["anchors"]]
         a, b = points[0], points[-1]
@@ -77,11 +92,11 @@ class ChartRenderer:
         tool = obj["tool"]
         if tool in POSITION_TOOLS:
             entry, target, stop = (anchor[1] for anchor in obj['anchors'])
-            x0, x1 = sorted((self.x(obj['anchors'][0][0]), self.x(obj['anchors'][1][0])))
+            x0, x1 = sorted((self.time_x(obj['anchors'][0][0]), self.time_x(obj['anchors'][1][0])))
             for price in (entry, target, stop):
-                line(QPointF(x0, self.y(price)), QPointF(x1, self.y(price)))
-            line(QPointF(x1, min(self.y(target), self.y(stop))),
-                 QPointF(x1, max(self.y(target), self.y(stop))))
+                line(QPointF(x0, self.price_y(price)), QPointF(x1, self.price_y(price)))
+            line(QPointF(x1, min(self.price_y(target), self.price_y(stop))),
+                 QPointF(x1, max(self.price_y(target), self.price_y(stop))))
         elif tool == "horizontal":
             line(QPointF(main.left(), a.y()), QPointF(main.right(), a.y()))
         elif tool == "vertical":
@@ -98,7 +113,7 @@ class ChartRenderer:
         elif tool == "fib":
             for level in obj["levels"]:
                 price = obj["anchors"][1][1] + (obj["anchors"][0][1]-obj["anchors"][1][1])*level["value"]
-                y = self.y(price)
+                y = self.price_y(price)
                 line(QPointF(min(a.x(), b.x()), y), QPointF(max(a.x(), b.x()), y))
                 labels.append((min(a.x(), b.x())+4, y-3, f"{level['label']}  ({price:,.6g})", level["color"]))
         else:
@@ -121,6 +136,7 @@ class ChartRenderer:
         return path, points, labels
 
     def draw_objects(self, p, objects):
+        self = cast("CandleChart", self)
         p.save()
         main, _ = self.plot_rects()
         p.setClipRect(main)
@@ -143,7 +159,7 @@ class ChartRenderer:
             elif obj["tool"] == "fib":
                 a, b = points
                 for level in obj["levels"]:
-                    y = self.y(obj["anchors"][1][1]+(obj["anchors"][0][1]-obj["anchors"][1][1])*level["value"])
+                    y = self.price_y(obj["anchors"][1][1]+(obj["anchors"][0][1]-obj["anchors"][1][1])*level["value"])
                     p.setPen(QPen(QColor(level["color"]), obj["width"], style))
                     p.drawLine(QPointF(min(a.x(), b.x()), y), QPointF(max(a.x(), b.x()), y))
             else:
@@ -174,10 +190,11 @@ class ChartRenderer:
         p.restore()
 
     def draw_position_object(self, p, obj, path, main):
-        start = self.x(obj['anchors'][0][0])
-        end = self.x(obj['anchors'][1][0])
+        self = cast("CandleChart", self)
+        start = self.time_x(obj['anchors'][0][0])
+        end = self.time_x(obj['anchors'][1][0])
         left, right = sorted((start, end))
-        entry, target, stop = (self.y(anchor[1]) for anchor in obj['anchors'])
+        entry, target, stop = (self.price_y(anchor[1]) for anchor in obj['anchors'])
         gain, loss = QColor(color('positive')), QColor(color('negative'))
         gain.setAlpha(42)
         loss.setAlpha(42)
@@ -225,8 +242,9 @@ class ChartRenderer:
             p.setBrush(Qt.BrushStyle.NoBrush)
 
     def price_label(self, p, price, text, label_color, *, line=True):
+        self = cast("CandleChart", self)
         main, _ = self.plot_rects()
-        y = self.y(price)
+        y = self.price_y(price)
         if not main.top() <= y <= main.bottom():
             return
         if line:
@@ -236,12 +254,14 @@ class ChartRenderer:
         p.setPen(QColor(color("accent_text")))
         p.drawText(QRectF(main.right()+3, y-9, 81, 19), Qt.AlignmentFlag.AlignCenter, text)
 
-    def layer_key(self):
+    def layer_key(self) -> LayerKey:
+        self = cast("CandleChart", self)
         return (self.width(), self.height(), self.devicePixelRatioF(), self.font().key(),
                 self._theme_revision, self.bar, self.left_time, self.count,
                 self.low, self.high, self.volume_ratio, self.render_interval)
 
     def new_layer(self):
+        self = cast("CandleChart", self)
         ratio = self.devicePixelRatioF()
         pixmap = QPixmap(max(1, round(self.width()*ratio)), max(1, round(self.height()*ratio)))
         pixmap.setDevicePixelRatio(ratio)
@@ -249,6 +269,7 @@ class ChartRenderer:
         return pixmap
 
     def draw_market_layer(self, painter):
+        self = cast("CandleChart", self)
         main, volume = self.plot_rects()
         start, end = self.visible()
         maximum = max((self.values[i][4] for i in range(start, end)), default=1) or 1
@@ -294,6 +315,7 @@ class ChartRenderer:
         painter.drawPixmap(0, 0, self._market_layer)
 
     def draw_axes(self, p):
+        self = cast("CandleChart", self)
         main, volume = self.plot_rects()
         left, step = self.left_index(), main.width()/self.count
         for i in range(6):
@@ -319,6 +341,7 @@ class ChartRenderer:
         p.setPen(QPen(QColor(color("border")), 1))
         p.drawLine(QPointF(main.left(), volume.top()-4), QPointF(main.right(), volume.top()-4))
     def draw_market(self, p, *, clip=None, maximum=None):
+        self = cast("CandleChart", self)
         main, volume = self.plot_rects()
         start, end = self.visible()
         if clip is not None:
@@ -423,6 +446,7 @@ class ChartRenderer:
         p.restore()
 
     def object_layers(self):
+        self = cast("CandleChart", self)
         dragged = self.selected_id if self.drag and self.drag["mode"] == "object" else None
         fixed = [o for o in self.objects if o["id"] != dragged]
         live = [o for o in self.objects if o["id"] == dragged]
@@ -445,11 +469,13 @@ class ChartRenderer:
         return live
 
     def draw_object_layer(self, painter):
+        self = cast("CandleChart", self)
         live = self.object_layers()
         painter.drawPixmap(0, 0, self._objects_layer)
         self.draw_objects(painter, live)
 
-    def paintEvent(self, event):
+    def paintEvent(self, a0):
+        self = cast("CandleChart", self)
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.fillRect(self.rect(), QColor(color("chart_background")))
@@ -473,7 +499,7 @@ class ChartRenderer:
             return
         cursor = self.point(self.snap_target[:2]) if self.snap_target is not None else self.pointer
         hovered = len(self.rows)-1
-        if cursor and main.left() <= cursor.x() <= main.right():
+        if cursor is not None and main.left() <= cursor.x() <= main.right():
             stamp = self.time_at(left+(cursor.x()-main.left())/step-.5)
             index = bisect_left(self.times, stamp)
             hovered = min(range(max(0, index-1), min(len(self.times), index+1)), key=lambda i: abs(self.times[i]-stamp))
@@ -504,11 +530,11 @@ class ChartRenderer:
                              color("text_muted" if self.price_stale else direction))
         self.draw_overlays(p, main)
         if self.external_crosshair_time is not None:
-            external_x = self.x(self.external_crosshair_time)
+            external_x = self.time_x(self.external_crosshair_time)
             if main.left() <= external_x <= main.right():
                 p.setPen(QPen(QColor(color("chart_crosshair")), .8, Qt.PenStyle.DashLine))
                 p.drawLine(QPointF(external_x, main.top()), QPointF(external_x, volume.bottom()))
-        if cursor and main.left() <= cursor.x() <= main.right() and main.top() <= cursor.y() <= volume.bottom():
+        if cursor is not None and main.left() <= cursor.x() <= main.right() and main.top() <= cursor.y() <= volume.bottom():
             x = cursor.x()
             p.setPen(QPen(QColor(color("chart_crosshair")), .8, Qt.PenStyle.DashLine))
             p.drawLine(QPointF(x, main.top()), QPointF(x, volume.bottom()))
@@ -539,19 +565,20 @@ class ChartRenderer:
         p.end()
 
     def draw_overlays(self, p, main):
-        visible = [o for o in sorted(self.overlays, key=lambda o: -o["price"]) if main.top() <= self.y(o["price"]) <= main.bottom()]
+        self = cast("CandleChart", self)
+        visible = [o for o in sorted(self.overlays, key=lambda o: -o["price"]) if main.top() <= self.price_y(o["price"]) <= main.bottom()]
         # 空间不足时聚合多余标签，价格线仍完整显示。
         capacity = max(1, int(main.height()/22))
         label_rows = visible[:capacity]
         positions = []
         for o in label_rows:
-            positions.append(max(self.y(o["price"]), positions[-1]+21 if positions else main.top()+10))
+            positions.append(max(self.price_y(o["price"]), positions[-1]+21 if positions else main.top()+10))
         if positions and positions[-1] > main.bottom()-10:
             positions[-1] = main.bottom()-10
             for i in range(len(positions)-2, -1, -1):
                 positions[i] = min(positions[i], positions[i+1]-21)
         for i, overlay in enumerate(visible):
-            y = self.y(overlay["price"])
+            y = self.price_y(overlay["price"])
             overlay_color = color("text_muted") if self.account_stale else overlay["color"]
             p.setPen(QPen(QColor(overlay_color), 1, Qt.PenStyle.DashLine))
             p.drawLine(QPointF(main.left(), y), QPointF(main.right(), y))
