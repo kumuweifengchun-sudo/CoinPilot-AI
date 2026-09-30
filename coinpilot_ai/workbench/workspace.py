@@ -6,6 +6,7 @@ from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import QApplication, QDockWidget, QMainWindow, QTabWidget
 
 from .titlebar import DockTitleBar
+from .dock import IndependentDock
 
 
 class WorkspaceLayout(QObject):
@@ -24,14 +25,13 @@ class WorkspaceLayout(QObject):
         self.desired = {key: True for key in panels}
         self.busy, self.suspended, self.locked = True, True, False
         self.focus_state = None
-        self.cached_state = None
         self.stopped = False
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
         self.timer.setInterval(350)
         self.timer.timeout.connect(self.save)
         for key, (title, widget) in panels.items():
-            dock = QDockWidget(title, self.host)
+            dock = IndependentDock(title, self.host)
             dock.setObjectName('workspace_' + key)
             dock.setWidget(widget)
             dock.setTitleBarWidget(DockTitleBar(dock))
@@ -51,7 +51,6 @@ class WorkspaceLayout(QObject):
         owner.installEventFilter(self)
         self.reset(save=False)
         self.restore()
-        self.cached_state = self.encode(self.host.saveState(self.VERSION))
         self.busy = False
         app = QApplication.instance()
         app.screenRemoved.connect(self.recover_screens)
@@ -113,7 +112,6 @@ class WorkspaceLayout(QObject):
         for dock in self.docks.values():
             dock.show()
         self.set_locked(False)
-        self.cached_state = self.encode(self.host.saveState(self.VERSION))
         self.sync_actions()
         self.busy = prior
         if save:
@@ -128,6 +126,7 @@ class WorkspaceLayout(QObject):
                               [200, max(400, self.host.width()-530), 320], Qt.Orientation.Horizontal)
         self.host.resizeDocks([self.docks[k] for k in ('market', 'info')],
                               [max(240, self.host.height()-190), 180], Qt.Orientation.Vertical)
+        self.host.layout().activate()
         self.schedule()
 
     def restore(self):
@@ -171,8 +170,8 @@ class WorkspaceLayout(QObject):
             self.owner.chart.maximize()
         self.desired[key] = visible
         dock = self.docks[key]
-        dock.setVisible(visible and not self.suspended)
-        if visible and not self.suspended:
+        dock.setVisible(visible)
+        if visible:
             dock.raise_()
         self.sync_actions()
         self.schedule()
@@ -183,36 +182,27 @@ class WorkspaceLayout(QObject):
     def activate(self, active):
         if self.stopped or self.suspended == (not active):
             return
-        self.busy = True
+        self.suspended = not active
         if not active:
             self.save(force=True)
-            self.cached_state = self.encode(self.host.saveState(self.VERSION))
-            self.suspended = True
-            for dock in self.docks.values():
-                dock.hide()
         else:
-            self.suspended = False
-            if self.cached_state:
-                self.host.restoreState(self.decode(self.cached_state), self.VERSION)
-            # 恢复的浮动坐标可能属于已拔除的显示器；不能再次带回屏幕外。
+            # 隐藏主窗口或切换页面仅由父控件隐藏停靠内容，不干预浮动窗口。
+            # 不恢复旧快照，以免覆盖主窗口隐藏期间副窗口的新位置及关闭状态。
             self.recover_screens(include_owner=False)
-            for key, dock in self.docks.items():
-                dock.setVisible(self.desired[key] and (self.focus_state is None or key == 'market'))
             QTimer.singleShot(0, self.apply_default_sizes)
-        self.busy = False
 
     def maximize(self, enabled):
         self.busy = True
         if enabled:
             self.focus_state = self.encode(self.host.saveState(self.VERSION))
             for key, dock in self.docks.items():
-                if key != 'market':
+                if key != 'market' and not dock.isFloating():
                     dock.hide()
         elif self.focus_state is not None:
             self.host.restoreState(self.decode(self.focus_state), self.VERSION)
             self.focus_state = None
             for key, dock in self.docks.items():
-                dock.setVisible(self.desired[key] and not self.suspended)
+                dock.setVisible(self.desired[key])
         self.busy = False
 
     def schedule(self, *_):
@@ -232,7 +222,7 @@ class WorkspaceLayout(QObject):
         self.timer.stop()
         if self.stopped or self.service.closed or (self.busy and not force):
             return
-        state = self.focus_state or (self.cached_state if self.suspended else self.encode(self.host.saveState(self.VERSION)))
+        state = self.focus_state or self.encode(self.host.saveState(self.VERSION))
         if state:
             self.service.store.put('workspace_layout', 'main', {
                 'version': self.VERSION, 'state': state, 'geometry': self.encode(self.owner.saveGeometry()),

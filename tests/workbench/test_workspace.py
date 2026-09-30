@@ -1,8 +1,10 @@
 """使用临时数据验证停靠布局与交易表单的生命周期，不连接账户。"""
+import sys
+
 import pytest
 from PyQt6.QtCore import QPoint, Qt
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QCheckBox, QDockWidget, QLabel, QMenuBar, QStyle, QStyleOptionComboBox
+from PyQt6.QtWidgets import QApplication, QCheckBox, QDockWidget, QLabel, QMenuBar, QStyle, QStyleOptionComboBox
 
 from coinpilot_ai.core.config import DEFAULT_CONFIG
 from coinpilot_ai.charts.panel import ChartPanel
@@ -317,20 +319,122 @@ def test_float_hide_reopen_and_pages_preserve_instances_and_draft(workspace, app
     for _ in range(3):
         window.pages.setCurrentIndex(1)
         app.processEvents()
-        assert all(not d.isVisible() for d in layout.docks.values())
+        assert all(d.isVisible() == layout.desired[k] for k, d in layout.docks.items())
         window.pages.setCurrentIndex(0)
         app.processEvents()
         assert layout.docks['market'].isVisible()
         assert not layout.docks['ai'].isVisible()
     window.close()
     assert not service.closed
-    assert all(not d.isVisible() for d in layout.docks.values())
+    assert all(d.isVisible() == layout.desired[k] for k, d in layout.docks.items())
     window.show()
     app.processEvents()
     assert window.chart is chart and len(window.findChildren(ChartPanel)) == 1
     assert window.trade.size.text() == '123.45'
     assert layout.docks['order'].isVisible() and layout.docks['order'].isFloating()
     assert not layout.docks['ai'].isVisible()
+
+
+def assert_independent_window(dock):
+    assert dock.isVisible() and not dock.isMinimized()
+    assert dock.windowType() == Qt.WindowType.Window
+    assert dock.windowHandle().transientParent() is None
+    if sys.platform == 'win32' and QApplication.platformName() == 'windows':
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        hwnd = ctypes.c_void_p(int(dock.winId()))
+        user32.GetWindow.restype = ctypes.c_void_p
+        # Qt isVisible() 在 owner 最小化后仍可能为真，必须验证系统实际可见性。
+        assert not user32.GetWindow(hwnd, 4)  # GW_OWNER
+        assert user32.IsWindowVisible(hwnd)
+        assert not user32.IsIconic(hwnd)
+
+
+@pytest.mark.parametrize('action', ['minimize', 'close', 'page'])
+def test_floating_windows_survive_main_window_changes(workspace, app, action):
+    window, service = workspace
+    layout = window.workspace
+    for key in ('market', 'order'):
+        layout.docks[key].setFloating(True)
+    app.processEvents()
+    if action == 'minimize':
+        window.title_bar.minimize_button.click()
+    elif action == 'close':
+        window.title_bar.close_button.click()
+    else:
+        window.pages.setCurrentIndex(2)
+    app.processEvents()
+    for key in ('market', 'order'):
+        assert_independent_window(layout.docks[key])
+    assert not service.closed
+    window.trade.size.setText('456.78')
+    market = layout.docks['market']
+    market.resize(720, 520)
+    market.move(40, 60)
+    app.processEvents()
+    geometry = market.geometry()
+    layout.docks['order'].close()
+    layout.save()
+    assert not service.store.get('workspace_layout', 'main')['visible']['order']
+    window.showNormal()
+    window.pages.setCurrentIndex(0)
+    app.processEvents()
+    assert_independent_window(market)
+    assert market.geometry() == geometry
+    assert not layout.docks['order'].isVisible()
+    assert window.trade.size.text() == '456.78'
+    # 独立窗口仍能停靠，并可再次分离；保存/恢复布局也须保留独立性。
+    market.setFloating(False)
+    app.processEvents()
+    assert not market.isFloating() and market.parentWidget() is layout.host
+    market.setFloating(True)
+    layout.save()
+    layout.restore()
+    window.showMinimized()
+    app.processEvents()
+    assert_independent_window(market)
+    window.exiting = True
+    window.close()
+    app.processEvents()
+    assert all(not dock.isVisible() for dock in layout.docks.values())
+    assert layout.stopped and not layout.timer.isActive()
+
+
+def test_floating_geometry_saved_while_main_hidden(workspace, app):
+    window, service = workspace
+    dock = window.workspace.docks['market']
+    dock.setFloating(True)
+    window.close()
+    dock.move(50, 70)
+    dock.resize(700, 500)
+    app.processEvents()
+    geometry = dock.geometry()
+    window.workspace.save()
+    restored = Workbench(service)
+    try:
+        restored.show()
+        app.processEvents()
+        other = restored.workspace.docks['market']
+        assert_independent_window(other)
+        assert other.geometry() == geometry
+    finally:
+        restored.exiting = True
+        restored.close()
+        restored.deleteLater()
+        app.processEvents()
+
+
+def test_floating_panel_can_reopen_while_main_hidden(workspace, app):
+    window, _ = workspace
+    dock = window.workspace.docks['order']
+    dock.setFloating(True)
+    window.close()
+    dock.close()
+    window.workspace.set_visible('order', True)
+    app.processEvents()
+    assert not window.isVisible()
+    assert_independent_window(dock)
 
 
 def test_layout_roundtrip_tabification_lock_and_hidden_panel(workspace, app):
