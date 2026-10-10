@@ -49,7 +49,7 @@ def test_stable_numeric_version_selection(version, newer):
 def test_unstable_releases_are_ignored(field):
     payload = release_payload()
     payload[field] = True
-    assert parse_release(payload) is None
+    assert parse_release(payload, current="0.1.0") is None
 
 
 @pytest.mark.parametrize("mutation", [
@@ -67,7 +67,7 @@ def test_rejects_invalid_or_incomplete_release(mutation):
     payload = release_payload()
     mutation(payload)
     with pytest.raises(ValueError):
-        parse_release(payload)
+        parse_release(payload, current="0.1.0")
 
 
 @pytest.mark.parametrize("url", ["http://github.com/x", "file:///C:/setup.exe", "https://github.com.evil.invalid/x",
@@ -249,7 +249,8 @@ def test_automatic_check_preference_and_no_automatic_download(app, tmp_path, mon
         assert controller.check_timer.isActive() and controller.check_timer.interval() == 15000
         controller.auto_check()
         assert checks == [True] and controller.check_timer.interval() == controller.CHECK_INTERVAL
-        release = parse_release(release_payload())
+        release = parse_release(release_payload(), current="0.1.0")
+        assert release is not None
         controller.client.available.emit(release)
         controller.client.available.emit(release)
         assert len(notices) == 1 and controller.dialog is None and controller.client.reply is None

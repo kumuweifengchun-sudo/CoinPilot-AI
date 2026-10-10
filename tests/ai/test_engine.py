@@ -1,4 +1,4 @@
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 import json
 import sqlite3
 from pathlib import Path
@@ -48,6 +48,15 @@ class ManualRunner:
 
 def snapshot(scope: str = SCOPE) -> WorkspaceSnapshot:
     return WorkspaceSnapshot(time.time(), scope, scope.split(":")[0], ChartContext("BTC-USDT-SWAP", "1H"))
+
+
+def wait_until(app: QApplication, ready: Callable[[], bool]) -> None:
+    """等待排队的 Qt 回调，不假设 Windows 在数毫秒内完成调度。"""
+    deadline = time.monotonic() + 3
+    while not ready() and time.monotonic() < deadline:
+        app.processEvents()
+        QTest.qWait(5)
+    assert ready(), "AI 异步回调未在限定时间内完成"
 
 
 @pytest.fixture
@@ -115,8 +124,7 @@ def test_provider_failure_and_timeout_keep_partial_text(chat: tuple[AiChatServic
     assert saved is not None and saved.status == "failed" and saved.error == "模拟失败"
     service.turn_timeout_ms = 10
     second = service.send("超时问题", snapshot())
-    QTest.qWait(30)
-    app.processEvents()
+    wait_until(app, lambda: not service.running)
     saved = service.store.get_turn(second.id, scope=SCOPE)
     assert saved is not None and saved.status == "failed"
 
@@ -133,11 +141,7 @@ def test_serial_tool_round_and_unknown_tool_returns_to_model(chat: tuple[AiChatS
     runner.emit(ToolRequested(ToolCall("second", "does_not_exist", {})))
     runner.emit(ProviderCompleted())
     assert len(runner.requests) == 1
-    for _ in range(50):
-        app.processEvents()
-        QTest.qWait(2)
-        if len(runner.requests) == 2:
-            break
+    wait_until(app, lambda: len(runner.requests) == 2)
     assert executed == ["market"] and len(runner.requests) == 2
     messages = runner.requests[-1].messages
     outputs = [json.loads(message.text) for message in messages if message.role == "tool"]
@@ -170,11 +174,7 @@ def test_indicator_draft_is_persisted_as_separate_item(chat: tuple[AiChatService
     turn = service.send("创建指标", snapshot())
     runner.emit(ToolRequested(ToolCall("indicator", "create_indicator_draft", {})))
     runner.emit(ProviderCompleted())
-    for _ in range(60):
-        app.processEvents()
-        QTest.qWait(2)
-        if len(runner.requests) == 2:
-            break
+    wait_until(app, lambda: len(runner.requests) == 2)
     runner.emit(ProviderCompleted())
     drafts = [item for item in service.store.list_items(turn.id, scope=SCOPE) if item.kind == "indicator_draft"]
     assert len(drafts) == 1 and drafts[0].payload == data
@@ -228,15 +228,14 @@ def test_tool_round_limit_and_failed_call_history_keep_protocol_pairs(chat: tupl
     for index in range(9):
         runner.emit(ToolRequested(ToolCall(f"unknown-{index}", "unknown", {})))
         runner.emit(ProviderCompleted())
-        QTest.qWait(5)
-        app.processEvents()
+        wait_until(app, lambda: not service.running or len(runner.requests) >= index + 2)
     saved = service.store.get_turn(turn.id, scope=SCOPE)
     assert saved is not None and saved.status == "failed" and "上限" in saved.error
     assert len(runner.requests) == 9
     service.send("继续", snapshot())
     runner.emit(ToolRequested(ToolCall("unknown-complete", "unknown", {})))
     runner.emit(ProviderCompleted())
-    QTest.qWait(10)
+    wait_until(app, lambda: len(runner.requests) == 11)
     runner.emit(TextDelta("缺少数据"))
     runner.emit(ProviderCompleted())
     service.send("追问", snapshot())
@@ -264,8 +263,7 @@ def test_tool_continuation_compacts_history_without_losing_current_call(chat: tu
     result_text[0] = "x" * size
     runner.emit(ToolRequested(ToolCall("current-call", "market", {})))
     runner.emit(ProviderCompleted())
-    QTest.qWait(10)
-    app.processEvents()
+    wait_until(app, lambda: len(runner.requests) == 2)
     assert len(runner.requests) == 2 and runner.requests[-1].system.endswith(COMPACTION_INSTRUCTIONS)
     assert not any(result_text[0] in message.text for message in runner.requests[-1].messages)
     summary = json.dumps({"intent": "继续讨论", "questions": [], "plans": [], "conclusions": [], "pending": []}, ensure_ascii=False)
@@ -289,7 +287,7 @@ def test_large_tool_result_returns_explicit_budget_gap_to_model(chat: tuple[AiCh
     turn = service.send("读取", snapshot())
     runner.emit(ToolRequested(ToolCall("large", "market", {})))
     runner.emit(ProviderCompleted())
-    QTest.qWait(10)
+    wait_until(app, lambda: len(runner.requests) == 2)
     assert len(runner.requests) == 2
     output = next(message for message in runner.requests[-1].messages if message.role == "tool")
     assert "上下文预算" in output.text and "x" * 10000 not in output.text
@@ -313,7 +311,7 @@ def test_sqlite_write_failure_stops_only_chat_and_allows_scope_change(chat: tupl
     elif operation == "cancel":
         service.cancel()
     else:
-        QTest.qWait(550)
+        wait_until(app, lambda: not service.running)
     assert not service.running and service.storage_error
     assert "private path" not in service.storage_error
     service.set_scope("live:new")
@@ -381,12 +379,12 @@ def test_model_and_tool_rounds_share_remaining_deadline(chat: tuple[AiChatServic
     QTest.qWait(30)
     runner.emit(ToolRequested(ToolCall("unknown-one", "unknown", {})))
     runner.emit(ProviderCompleted())
-    QTest.qWait(15)
+    wait_until(app, lambda: len(runner.requests) == 2)
     assert len(runner.requests) == 2 and runner.timeouts[1] < runner.timeouts[0] - 20
     QTest.qWait(30)
     runner.emit(ToolRequested(ToolCall("unknown-two", "unknown", {})))
     runner.emit(ProviderCompleted())
-    QTest.qWait(15)
+    wait_until(app, lambda: len(runner.requests) == 3)
     assert len(runner.requests) == 3 and runner.timeouts[2] < runner.timeouts[1] - 20
 
 
