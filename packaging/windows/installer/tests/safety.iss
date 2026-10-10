@@ -48,9 +48,11 @@ begin
       RemoveOwnedStartup(Key, Exe);
       Require(not RegValueExists(HKCU, Key, 'CryptoWidget'), 'Missing startup created');
       CheckCommand(Key, Exe, '"' + Exe + '" --config "C:\数据 文件.json"', True);
-      CheckCommand(Key, Exe, '  "' + Lowercase(Exe) + '"' + #9 + '--cache-dir "C:\缓存"', True);
+      { Lowercase 的 AnyString 参数可能经过系统 ANSI 代码页；中文样例使用原始 Unicode 文本。 }
+      CheckCommand(Key, Exe, '  "c:\测试 目录\COINPILOT-AI.EXE"' + #9 + '--cache-dir "C:\缓存"', True);
       CheckCommand(Key, 'C:\Widget\coinpilot-ai.exe', 'C:\Widget\coinpilot-ai.exe --config c:\config.json', True);
       CheckCommand(Key, Exe, '"C:\其他目录\coinpilot-ai.exe"', False);
+      CheckCommand(Key, Exe, '"C:\其他 地方\coinpilot-ai.exe"', False);
       CheckCommand(Key, Exe, '"C:\Python\pythonw.exe" "C:\src\coinpilot-ai.py"', False);
       CheckCommand(Key, Exe, '"' + Exe + '.backup"', False);
       CheckCommand(Key, Exe, '"' + Exe, False);
@@ -71,7 +73,7 @@ begin
       Require(not CanReplaceFile(ExpandConstant('{srcexe}')), 'Running EXE accepted');
       Require(SaveStringToFile(Report, 'PASS: startup ownership, quoting, foreign entries, exclusive locks, running EXE', False), 'Cannot save report');
     except
-      SaveStringToFile(Report, 'FAIL: ' + GetExceptionMessage, False);
+      SaveStringToFile(Report, Utf8Encode('FAIL: ' + GetExceptionMessage), False);
     end;
   finally
     RegDeleteKeyIncludingSubkeys(HKCU, Key);
