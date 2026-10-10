@@ -1,5 +1,7 @@
 """由定义描述驱动的指标 Pane，与主图共享时间轴、缩放和十字光标。"""
 import math
+from bisect import bisect_left
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, override
 
 from PyQt6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt
@@ -7,6 +9,8 @@ from PyQt6.QtGui import QColor, QMouseEvent, QPaintEvent, QPainter, QPen, QWheel
 from PyQt6.QtWidgets import QWidget
 
 from coinpilot_ai.indicators.validation import instance_from_record
+from coinpilot_ai.indicators.models import PlotDefinition
+from coinpilot_ai.indicators.runtime.result import IndicatorResult
 from coinpilot_ai.ui.theme import color
 from .plots import draw_plot
 
@@ -33,6 +37,31 @@ class IndicatorStrip(QWidget):
         main, _ = self.canvas.plot_rects()
         offset = self.mapFromGlobal(self.canvas.mapToGlobal(QPoint(0, 0))).x()
         return QRectF(main.left() + offset, 22., main.width(), max(1., self.height() - 30.))
+
+    def legend_values(self, result: IndicatorResult, plots: Sequence[PlotDefinition]) -> list[str]:
+        """按主图同一根 K 线取值；缺失结果不回退到其他时刻。"""
+        times = self.canvas.times
+        stamp = times[-1] if times else None
+        if times and self.crosshair_time is not None:
+            # crosshair_changed 传递横轴坐标，K 线中心位于开盘时间后半个间隔。
+            target = self.crosshair_time - self.canvas.interval / 2
+            index = bisect_left(times, target)
+            selected = min(range(max(0, index - 1), min(len(times), index + 1)),
+                           key=lambda i: abs(times[i] - target))
+            stamp = times[selected]
+        index = bisect_left(result.times, stamp) if stamp is not None else len(result.times)
+        matched = index < len(result.times) and result.times[index] == stamp
+        labels: list[str] = []
+        for plot in plots:
+            values = result.outputs.get(plot.output, ())
+            value = values[index] if matched and index < len(values) else None
+            if value is None or not math.isfinite(value):
+                labels.append("—")
+            elif result.metadata.output_types.get(plot.output) == "bool":
+                labels.append("真" if value else "假")
+            else:
+                labels.append(f"{value:,.6g}")
+        return labels
 
     @override
     def wheelEvent(self, a0: QWheelEvent | None) -> None:
@@ -90,8 +119,19 @@ class IndicatorStrip(QWidget):
         instance = instance_from_record(setting, self.canvas.book.catalog)
         definition = self.canvas.book.catalog.resolve(instance.definition, instance.definition_revision)
         plots = [plot for plot in definition.plots if plot.target == "pane" and instance.plots[plot.id].visible]
+        title = definition.name + " · " + ", ".join(str(value) for value in instance.inputs.values())
+        painter.save()
+        painter.setClipRect(QRectF(8, 0, max(0, self.width() - 16), 22))
         painter.setPen(QColor(color("text_secondary")))
-        painter.drawText(8, 15, definition.name + " · " + ", ".join(str(value) for value in instance.inputs.values()))
+        painter.drawText(8, 15, title)
+        xlegend = 8 + painter.fontMetrics().horizontalAdvance(title) + 16
+        value_plots = [plot for plot in plots if plot.type != "horizontal_line"]
+        for plot, value in zip(value_plots, self.legend_values(result, value_plots)):
+            text = f"{plot.title}  {value}" if len(value_plots) > 1 else value
+            painter.setPen(QColor(instance.plots[plot.id].color))
+            painter.drawText(QPointF(xlegend, 15), text)
+            xlegend += painter.fontMetrics().horizontalAdvance(text) + 16
+        painter.restore()
         bounds = self.plot_bounds()
         start, end = self.canvas.visible()
         numbers = [value for plot in plots if plot.type in ("line", "histogram")

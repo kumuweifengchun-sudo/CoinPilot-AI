@@ -3,8 +3,8 @@ from copy import deepcopy
 from typing import cast
 import math
 
-from PyQt6.QtCore import QDateTime, Qt, QItemSelectionModel
-from PyQt6.QtGui import QColor, QKeySequence, QShortcut
+from PyQt6.QtCore import QDateTime, Qt, QItemSelectionModel, QSize, QRectF
+from PyQt6.QtGui import QColor, QKeySequence, QShortcut, QIcon, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QColorDialog, QComboBox, QDateTimeEdit, QDialog,
     QDialogButtonBox, QDoubleSpinBox, QFormLayout, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QPushButton, QScrollArea, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
@@ -42,17 +42,28 @@ class DateJumpDialog(QDialog):
 
 
 class ColorButton(QPushButton):
-    def __init__(self, value, parent=None):
+    def __init__(self, value: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.set_color(value)
         self.clicked.connect(self.choose)
 
-    def set_color(self, color):
+    def set_color(self, color: str) -> None:
         self.color = color
         self.setText(color)
-        self.setStyleSheet(f"QPushButton {{color: {color}; padding: 4px;}}")
+        # 图标置于颜色代码左侧；代码沿用主题文字色，黑白色也能清楚阅读。
+        swatch = QPixmap(32, 32)
+        swatch.setDevicePixelRatio(2.)
+        swatch.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(swatch)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor(theme_color("border_strong")), 1.))
+        painter.setBrush(QColor(color))
+        painter.drawRoundedRect(QRectF(1., 1., 14., 14.), 2., 2.)
+        painter.end()
+        self.setIcon(QIcon(swatch))
+        self.setIconSize(QSize(16, 16))
 
-    def choose(self):
+    def choose(self) -> None:
         color = QColorDialog.getColor(QColor(self.color), self, "选择颜色")
         if color.isValid():
             self.set_color(color.name())

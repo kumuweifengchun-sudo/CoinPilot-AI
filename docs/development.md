@@ -150,12 +150,15 @@ uv run --locked python scripts/qa/verify_ui.py
 uv run --locked python scripts/qa/verify_workbench.py
 uv run --locked python scripts/qa/verify_ai_chat.py
 uv run --locked python scripts/qa/verify_indicators.py
+uv run --locked python scripts/qa/verify_derivatives.py
 uv run --locked python scripts/qa/verify_paper.py
 uv run --locked python scripts/qa/verify_updates.py
 ```
 
 输出位于 `artifacts/`。界面改动应实际查看截图，不能仅凭脚本退出码判断布局正确。
 `verify_indicators.py` 验证主副图时间轴对齐、Pine 编译预览、行列诊断、布尔条件与 AI 草稿，并测量 5 万根脚本预热和 80 次末根修正。使用临时库、空凭据及模拟行情，不发起网络请求；普通图表性能继续使用 `benchmark_charts.py`。
+
+`verify_derivatives.py` 使用临时库与模拟公开快照，检查 OI/Funding 单点、短序列、无历史采样及请求失败时的数值和提示；不请求网络，不代表交易所接口连通性验收。
 
 `verify_ai_chat.py` 使用临时数据和模拟模型生成工具、草稿、浮动面板及高级兼容设置截图，并测量公开文本的持续刷新和检查点频率。本次离线样例约 1.2 秒内合并 135 个 delta 为 15 次刷新（约 12.5 次／秒），保存 2 次检查点（约 1.7 次／秒），隐藏期间持续刷新为 0；结果不代表远程模型速度或完整端到端性能。
 

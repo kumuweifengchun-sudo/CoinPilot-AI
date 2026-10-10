@@ -426,8 +426,11 @@ class ChartPanel(QWidget):
         for strip in self.derivative_strips:
             strip.update()
 
-    def toggle_derivatives(self):
+    def toggle_derivatives(self) -> None:
         self.derivative_scroll.setVisible(self.derivative_button.isChecked())
+        if self.derivative_button.isChecked():
+            self.service.derivatives.schedule({self.instrument})
+            self.update_indicator_strips()
 
     def derivatives_changed(self, instrument):
         if instrument == self.instrument and self.derivative_button.isChecked():
@@ -542,6 +545,8 @@ class ChartPanel(QWidget):
         if s.closed:
             return
         if kind in ("selection", "environment"):
+            if self.derivative_button.isChecked():
+                s.derivatives.schedule({self.instrument})
             if self.symbol_choice.instrument != self.instrument:
                 self.symbol_choice.set_instrument(self.instrument)
             self.pending_change = None

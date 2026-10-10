@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import QApplication
 
 from coinpilot_ai.application.bootstrap import create_application
 from coinpilot_ai.application.service import CockpitService
+from coinpilot_ai.charts.settings import IndicatorEditDialog
 from coinpilot_ai.core.config import DEFAULT_CONFIG
 from coinpilot_ai.indicators.conditions import spec_record
 from coinpilot_ai.indicators.editor import EXAMPLE, IndicatorEditor
@@ -74,7 +75,7 @@ def main() -> None:
         service.api.get = no_network
         instrument, bar = service.selected, service.bar
         end = floor_time(int(time.time()*1000), bar)
-        rows = CandleBuffer((shift(end, bar, i-299), 100.+math.sin(i/8)*5, 108., 92.,
+        rows = CandleBuffer((shift(end, bar, i-299), 100.+math.sin(i/8)*5, 108.+i%9, 92.-i%5,
             100.+math.sin(i/8)*5, 10.+i%7, 0., 0., int(i < 299)) for i in range(300))
         service.candles[(instrument, bar)] = rows
         overlay = service.indicator_library.save(EXAMPLE, confirmed=True)
@@ -82,7 +83,7 @@ def main() -> None:
         overlay_instance = IndicatorInstance("overlay", overlay.definition.id, 1)
         pane_instance = IndicatorInstance("pane", pane.definition.id, 1)
         service.chart_book.save_indicators([instance_record(overlay_instance), instance_record(pane_instance),
-            {"id": "rsi", "kind": "RSI"}])
+            {"id": "rsi", "kind": "RSI"}, {"id": "atr", "kind": "ATR"}])
         window = Workbench(service)
         window.resize(1440, 960)
         window.show()
@@ -94,7 +95,7 @@ def main() -> None:
             chart.canvas.calculate_indicators()
             chart.rebuild_indicator_strips()
             QTest.qWait(60)
-            assert len(chart.indicator_strips) == 2
+            assert len(chart.indicator_strips) == 3
             canvas_origin = chart.canvas.mapToGlobal(QPoint(0, 0)).x()
             main, _ = chart.canvas.plot_rects()
             for strip in chart.indicator_strips:
@@ -102,6 +103,34 @@ def main() -> None:
                 assert abs(strip.mapToGlobal(QPoint(0, 0)).x()+bounds.left()-canvas_origin-main.left()) < 1
                 assert bounds.width() == main.width()
             assert chart.grab().save(str(output / "chart-panes.png"))
+            atr_strip = next(strip for strip in chart.indicator_strips if strip.indicator_id == "atr")
+            atr_result = next(result for setting, result in chart.canvas.indicator_results if setting["id"] == "atr")
+            atr_plots = service.indicator_catalog.legacy("ATR").plots
+            chart.indicator_scroll.ensureWidgetVisible(atr_strip)
+            app.processEvents()
+            hovered = 260
+            QTest.mouseMove(chart.canvas, QPoint(round(chart.canvas.time_x(chart.canvas.times[hovered])), round(main.center().y())))
+            app.processEvents()
+            expected = atr_result.outputs["value"][hovered]
+            assert expected is not None
+            assert atr_strip.legend_values(atr_result, atr_plots) == [f"{expected:,.6g}"]
+            assert chart.grab().save(str(output / "atr-crosshair.png"))
+            colors = IndicatorEditDialog({"id": "colors", "kind": "MACD", "color": "#9394ee"})
+            try:
+                colors.show()
+                app.processEvents()
+                for button in [colors.color, *(shade for _, shade, _ in colors.plot_fields.values())]:
+                    swatch = button.icon().pixmap(button.iconSize()).toImage()
+                    assert not swatch.isNull()
+                    assert swatch.pixelColor(swatch.width() // 2, swatch.height() // 2).name() == button.text()
+                assert colors.grab().save(str(output / "indicator-colors.png"))
+                colors.color.set_color("#ffffff")
+                swatch = colors.color.icon().pixmap(colors.color.iconSize()).toImage()
+                assert swatch.pixelColor(swatch.width() // 2, swatch.height() // 2).name() == "#ffffff"
+                assert colors.grab().save(str(output / "indicator-colors-changed.png"))
+            finally:
+                colors.reject()
+                colors.deleteLater()
             def apply(instance: IndicatorInstance) -> None:
                 service.chart_book.save_indicators([*service.chart_book.indicators, instance_record(instance)])
             editor = IndicatorEditor(service, apply, source=EXAMPLE, preview_pair=(instrument, bar))
@@ -114,7 +143,7 @@ def main() -> None:
             definitions = len(service.store.list("indicator_definition"))
             editor.add_to_chart()
             assert len(service.store.list("indicator_definition")) == definitions + 1
-            assert len(service.chart_book.indicators) == 4
+            assert len(service.chart_book.indicators) == 5
             editor.code.setPlainText('//@version=6\nindicator("Unsafe")\nplot(request.security("BTC", "1D", close))')
             editor.compile_preview()
             wait(app, lambda: editor.job is None)

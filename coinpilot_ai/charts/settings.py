@@ -3,7 +3,7 @@ from copy import deepcopy
 from uuid import uuid4
 from typing import TYPE_CHECKING, Protocol
 
-from PyQt6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
+from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
                              QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QPushButton,
                              QSpinBox, QVBoxLayout, QMessageBox, QWidget)
 from PyQt6.QtCore import Qt
@@ -14,6 +14,7 @@ from coinpilot_ai.indicators.input_widgets import InputFields
 from coinpilot_ai.indicators.validation import instance_from_record, instance_record
 from coinpilot_ai.indicators.models import IndicatorInstance, SourceKind
 from coinpilot_ai.charts.state import IndicatorSetting, normalize_indicators
+from coinpilot_ai.charts.dialogs import ColorButton
 from coinpilot_ai.market.intervals import BARS
 
 if TYPE_CHECKING:
@@ -52,8 +53,7 @@ class IndicatorEditDialog(QDialog):
                 self.bar.addItem(bar, bar)
         self.bar.setCurrentIndex(max(0, self.bar.findData(self.original.timeframe)))
         form.addRow("K 线周期", self.bar)
-        self.color = QPushButton(item["color"])
-        self.color.clicked.connect(self.choose_color)
+        self.color = ColorButton(item["color"])
         self.line_width = QDoubleSpinBox()
         self.line_width.setRange(.5, 6)
         self.line_width.setSingleStep(.5)
@@ -63,17 +63,12 @@ class IndicatorEditDialog(QDialog):
         form.addRow("颜色", self.color)
         form.addRow("线宽", self.line_width)
         form.addRow("状态", self.visible)
-        self.plot_fields: dict[str, tuple[QCheckBox, QPushButton, QDoubleSpinBox]] = {}
+        self.plot_fields: dict[str, tuple[QCheckBox, ColorButton, QDoubleSpinBox]] = {}
         for plot in self.definition.plots:
             style = self.original.plots[plot.id]
             shown = QCheckBox(plot.title)
             shown.setChecked(style.visible)
-            shade = QPushButton(style.color)
-            def choose(_checked: bool = False, target: QPushButton = shade) -> None:
-                chosen = QColorDialog.getColor(parent=self)
-                if chosen.isValid():
-                    target.setText(chosen.name())
-            shade.clicked.connect(choose)
+            shade = ColorButton(style.color)
             width = QDoubleSpinBox()
             width.setRange(.5, 6)
             width.setValue(style.width)
@@ -87,11 +82,6 @@ class IndicatorEditDialog(QDialog):
         buttons.accepted.connect(self.save)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
-
-    def choose_color(self):
-        chosen = QColorDialog.getColor(parent=self)
-        if chosen.isValid():
-            self.color.setText(chosen.name())
 
     def save(self) -> None:
         try:
