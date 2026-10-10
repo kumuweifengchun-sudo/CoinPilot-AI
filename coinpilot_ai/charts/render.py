@@ -5,6 +5,7 @@ if TYPE_CHECKING:
     from .canvas import CandleChart
 
 from datetime import datetime
+from decimal import Decimal
 from math import ceil
 from bisect import bisect_left, bisect_right
 
@@ -17,11 +18,12 @@ from coinpilot_ai.market.buffer import ValueView
 from coinpilot_ai.ui.theme import color
 from .position import POSITION_TOOLS, position_metrics
 from .pattern import projected_prices
+from .state import Drawing
 
 
 type LayerKey = tuple[int, int, float, str, int, str, float | None, float, float, float, float, int]
 type MarketLayerKey = tuple[LayerKey, int, tuple[tuple[tuple[str, object], ...], ...], float]
-type ObjectLayerKey = tuple[LayerKey, str | None, str]
+type ObjectLayerKey = tuple[LayerKey, str | None, str, tuple[float | None, bool] | None]
 
 
 class ChartRenderer:
@@ -189,45 +191,60 @@ class ChartRenderer:
                 p.setBrush(Qt.BrushStyle.NoBrush)
         p.restore()
 
-    def draw_position_object(self, p, obj, path, main):
+    def draw_position_line(self, p: QPainter, main: QRectF, left: float, right: float,
+                           y: float, token: str, text: str = "") -> None:
+        """数值嵌在线段中央；只给文字留出断口，不覆盖下方 K 线。"""
+        p.setPen(QPen(QColor(color(token)), 1.3))
+        visible_left, visible_right = max(main.left(), left), min(main.right(), right)
+        metrics = p.fontMetrics()
+        available = visible_right-visible_left-16
+        if not text or available < 45 or not main.top() <= y <= main.bottom():
+            p.drawLine(QPointF(left, y), QPointF(right, y))
+            return
+        shown = metrics.elidedText(text, Qt.TextElideMode.ElideRight, int(available))
+        width = metrics.horizontalAdvance(shown)
+        center = (visible_left+visible_right)/2
+        p.drawLine(QPointF(left, y), QPointF(center-width/2-4, y))
+        p.drawLine(QPointF(center+width/2+4, y), QPointF(right, y))
+        p.drawText(QRectF(visible_left, y-metrics.height()/2, visible_right-visible_left, metrics.height()),
+                   Qt.AlignmentFlag.AlignCenter, shown)
+
+    def draw_position_object(self, p: QPainter, obj: Drawing, path: QPainterPath, main: QRectF) -> None:
         self = cast("CandleChart", self)
         start = self.time_x(obj['anchors'][0][0])
         end = self.time_x(obj['anchors'][1][0])
         left, right = sorted((start, end))
         entry, target, stop = (self.price_y(anchor[1]) for anchor in obj['anchors'])
-        gain, loss = QColor(color('positive')), QColor(color('negative'))
-        gain.setAlpha(42)
-        loss.setAlpha(42)
-        p.fillRect(QRectF(left, min(entry, target), right-left, abs(entry-target)), gain)
-        p.fillRect(QRectF(left, min(entry, stop), right-left, abs(entry-stop)), loss)
-        p.setPen(QPen(QColor(color('positive')), 1.3))
-        p.drawLine(QPointF(left, target), QPointF(right, target))
-        p.setPen(QPen(QColor(color('text')), 1.3))
-        p.drawLine(QPointF(left, entry), QPointF(right, entry))
-        p.setPen(QPen(QColor(color('negative')), 1.3))
-        p.drawLine(QPointF(left, stop), QPointF(right, stop))
+        for boundary, token in ((target, 'positive'), (stop, 'negative')):
+            shade = QColor(color(token))
+            shade.setAlpha(32)
+            p.fillRect(QRectF(left, min(entry, boundary), right-left, abs(entry-boundary)), shade)
         p.setPen(QPen(QColor(obj['color']), obj['width']))
         p.drawLine(QPointF(right, min(target, stop)), QPointF(right, max(target, stop)))
         try:
             result = position_metrics(obj)
         except ValueError:
             result = None  # 未完成绘制或拖动经过无效价格时，仅预览图形。
+        profit_text = loss_text = current_text = ""
+        current_token = 'text'
         if result:
-            labels = ((target, entry, f"预计盈利 +{result['profit_usdt']:,.2f} U · {result['profit_percent']:.2f}%", 'positive'),
-                      (stop, entry, f"预计亏损 -{result['loss_usdt']:,.2f} U · {result['loss_percent']:.2f}%", 'negative'))
-            for boundary, middle, text, token in labels:
-                y = (boundary+middle)/2
-                if not main.top()+10 <= y <= main.bottom()-4 or right-left < 55:
-                    continue
-                available = min(main.right(), right)-max(main.left(), left)-8
-                if available < 45:
-                    continue
-                metrics = p.fontMetrics()
-                shown = metrics.elidedText(text, Qt.TextElideMode.ElideRight, int(available))
-                x = max(main.left()+4, min(left+5, main.right()-available))
-                p.fillRect(QRectF(x-2, y-11, available+4, 19), QColor(color('surface_raised')))
-                p.setPen(QColor(color(token)))
-                p.drawText(QPointF(x, y+3), shown)
+            profit_text = f"+{result['profit_usdt']:,.2f} U · {result['profit_percent']:.2f}%"
+            loss_text = f"-{result['loss_usdt']:,.2f} U · {result['loss_percent']:.2f}%"
+            current_text = "— U · —%"
+            price = Decimal(str(self.last_price)) if self.last_price is not None else None
+            if price is not None and price.is_finite() and price > 0:
+                direction = 1 if obj['tool'] == 'long_position' else -1
+                change = (price-result['entry'])/result['entry']*direction
+                if not change:
+                    change = abs(change)  # 开空的零变化不显示 Decimal 的负零。
+                current_text = f"{result['notional']*change:+,.2f} U · {change*100:+.2f}%"
+                current_token = 'positive' if change > 0 else 'negative' if change < 0 else 'text'
+                if self.price_stale:
+                    current_text += " · 过期"
+                    current_token = 'text_muted'
+        self.draw_position_line(p, main, left, right, target, 'positive', profit_text)
+        self.draw_position_line(p, main, left, right, stop, 'negative', loss_text)
+        self.draw_position_line(p, main, left, right, entry, current_token, current_text)
         stroker = QPainterPathStroker()
         stroker.setWidth(max(10, obj['width']+6))
         hit = stroker.createStroke(path)
@@ -453,7 +470,9 @@ class ChartRenderer:
         if self.preview:
             live.append(self.preview)
         # 对象数远小于历史数；签名也覆盖外部属性编辑与撤销后的原地变更。
-        key = (self.layer_key(), self.selected_id, repr(fixed))
+        position_quote = ((self.last_price, self.price_stale)
+                          if any(o['tool'] in POSITION_TOOLS for o in fixed) else None)
+        key = (self.layer_key(), self.selected_id, repr(fixed), position_quote)
         if key != self._objects_key:
             self._objects_layer = self.new_layer()
             p = QPainter(self._objects_layer)
