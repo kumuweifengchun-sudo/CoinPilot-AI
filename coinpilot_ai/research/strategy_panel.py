@@ -6,6 +6,7 @@ from PyQt6.QtCore import QDateTime
 from PyQt6.QtWidgets import (QComboBox, QDateTimeEdit, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
                              QListWidget, QVBoxLayout, QWidget)
 
+from coinpilot_ai.indicators.conditions import spec_title
 from .backtest import run_backtest, validate_strategy
 from coinpilot_ai.market.intervals import BARS
 from coinpilot_ai.trading.models import instrument_id
@@ -110,11 +111,11 @@ class StrategyPage(QWidget):
     def refresh_conditions(self):
         self.condition_list.clear()
         for condition in self.conditions:
-            self.condition_list.addItem(f"{condition['indicator']['kind']} {condition.get('line', 'value')} "
-                                        f"{condition['op']} {condition.get('threshold', condition.get('compare', {}).get('indicator', {}).get('kind'))}")
+            self.condition_list.addItem(f"{spec_title(condition['indicator'], self.service.indicator_catalog)} {condition.get('line', 'value')} "
+                                        f"{condition['op']} {condition.get('threshold', spec_title(condition.get('compare', {}).get('indicator'), self.service.indicator_catalog))}")
 
     def add_condition(self):
-        dialog = IndicatorConditionDialog(parent=self)
+        dialog = IndicatorConditionDialog(parent=self, catalog=self.service.indicator_catalog)
         if dialog.exec():
             self.conditions.append(dialog.condition)
             self.refresh_conditions()
@@ -130,7 +131,7 @@ class StrategyPage(QWidget):
             "instrument": instrument_id(self.instrument.text()), "bar": self.bar.currentData(),
             "direction": self.direction.currentData(), "stop_percent": self.stop.text().strip(),
             "target_percent": self.target.text().strip(), "risk_percent": self.risk.text().strip(),
-            "conditions": list(self.conditions)})
+            "conditions": list(self.conditions)}, catalog=self.service.indicator_catalog)
 
     def save_strategy(self):
         try:
@@ -180,7 +181,7 @@ class StrategyPage(QWidget):
         self.status.setText("正在后台逐根回测…")
         def work():
             try:
-                result = run_backtest(rows, strategy, spec, cancelled=lambda: cancelled.is_set() or self.service.closed, **options)
+                result = run_backtest(rows, strategy, spec, cancelled=lambda: cancelled.is_set() or self.service.closed, catalog=self.service.indicator_catalog, **options)
                 result["coverage"]["sources"] = self.cache.coverage(strategy["instrument"], strategy["bar"],
                     int(rows[0][0]), int(rows[-1][0]))["segments"]
                 return result

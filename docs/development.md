@@ -17,11 +17,13 @@
 | `desktop/` | `widget.py` 迷你窗口；`controller.py` 托盘及工作台生命周期；快捷键、单实例及开机启动 |
 | `workbench/` | `window.py` 页面组装；`workspace.py` 停靠布局；`profiles.py` 工作区快照；`settings.py` 设置 |
 | `market/` | 报价、WebSocket、K 线与缓存、指标、盘口及衍生品数据 |
+| `indicators/` | 定义／实例、目录、版本库、受限脚本编译与运行；`conditions.py` 共用条件；`editor.py` 导入与预览 |
 | `charts/` | `canvas.py` 交互；`render.py` 绘制；`state.py` 状态；`multi.py` 多图；面板与属性对话框 |
 | `integrations/` | `okx.py` API 客户端；`transport.py` 异步请求、超时与取消 |
 | `trading/` | `models.py` 订单规则；`service.py` 提交；`paper.py` 模拟账户；`matching.py` 撮合；风险、提醒及历史同步 |
 | `research/` | 回放会话、指标策略回测、市场扫描及对应页面 |
-| `review/` | 交易归集、统计、资金曲线、AI 协议、提示词与复盘页面 |
+| `ai/` | `engine.py` 会话运行层；`transport.py` SSE／JSON 传输；`providers/` 协议适配；`tools/` 业务工具；`context.py` 上下文与压缩；`store.py` 独立聊天 SQLite；`legacy.py` 旧请求适配 |
+| `review/` | 交易归集、统计、资金曲线、旧 AI 接口兼容、提示词与复盘页面 |
 | `ui/` | 共享主题、字体、图标及控件 |
 | `updates/` | 发行版检查、下载校验、更新界面及安装交接 |
 
@@ -59,7 +61,8 @@
 - 网络请求使用既有 Qt 异步机制，复用代理、取消与超时处理，不在 UI 槽函数中阻塞等待。
 - 按合约、周期、时间戳去重合并 K 线。切换品种、周期、环境或代理后，旧响应不得污染新状态；历史补页不得覆盖完整缓存。
 - 区分实时、轮询、重连、缺口和过期。断线、休眠恢复时先建立有效基线，不用陈旧数据触发新提醒。
-- 指标计算复用 `market/indicators.py`，保留预热、缺失值和已收盘状态；不能把未知值当作零或满足条件。
+- 指标计算使用 `indicators/runtime/`，`market/indicators.py` 保留旧 API 转发。定义、输入、输出及绘图描述由每个业务服务的 `IndicatorCatalog` 解析；保留预热、缺失值和已收盘状态，不能把未知值当作零或满足条件。
+- 自定义源码保存到主库独立的 `indicator_definition` 命名空间，不复制进工作区。保存新 revision，已有图表、提醒、扫描模板与策略保持版本引用；删除前检查所有作用域的配置引用，仍被引用时只允许隐藏。启动重新校验源码哈希并编译，不从数据库执行 Python 或未经校验的 IR。边界与验收见 [指标运行时](indicator-runtime.md)。
 - 绘图锚点保存时间与价格坐标；平移、缩放、补页和周期切换不能使其漂移。拖动结束再持久化，避免逐帧写数据库。
 - 磁吸指绘图锚点吸附可见 K 线高低点，默认开启，按 `Alt` 临时关闭；不能将其解释为桌面窗口贴边。
 - 多图的独立视口、指标与可选同步均须保留；同步操作防止递归回调，工作区切换应恢复相应状态。
@@ -78,11 +81,40 @@
 
 ### AI 与复盘
 
-- AI 仅分析事实或准备可编辑草稿，不能绕过订单确认；当前工作台 AI 占位面板不能被描述成已完成的聊天功能。
+- AI 仅分析事实或准备可编辑草稿，不能绕过订单确认；工具注册表不得提供提交、撤单、平仓或调整杠杆的执行接口。
 - AI 未配置、失败或取消不能阻塞公开行情、规则、手工交易和记录。
 - 盈亏、费用与统计由程序计算。外部交易、历史缺口及无法归属费用保持标记，不让 AI 补造数值或交易理由。
 - 报告保存快照、提示词版本、服务／模型与时间；重新生成保留历史版本。
 - 传给 AI 的上下文不得包含 API 密钥等凭据，外部内容视为分析数据，不能改变程序交易权限。
+
+`CockpitService` 独占共享 `AiChatService`、`ProviderManager` 和 `AiStreamTransport`，面板只显示事件及构建轻量工作区资料。`AiChatStore.from_main_path(main_path)` 将主库 `foo.sqlite3` 映射为独立的 `foo.ai.sqlite3`，不打开主库。聊天库启用 WAL、外键、5 秒忙等待及版本校验，拒绝误用业务库和未知版本。版本 3 保存摘要的权限来源；版本 1／2 自动迁移，旧摘要保守视为包含私有资料。打开聊天库失败时禁用聊天入口，公开行情与手工交易仍可使用。
+
+聊天存储由单个服务在一个线程中独占持有，不为每个窗口或请求重复打开；初始化时将上次遗留的 `running` 轮次和运行中条目标为 `interrupted`，保留已写入的部分文本。所有读写显式传入 `scope`，会话创建后不能改 scope；每个会话最多运行一个轮次。用户消息和轮次原子保存，已结束轮次／条目拒绝迟到回调改写。历史读取提供有数量上限的分页接口，不在打开数据库时加载历史条目。
+聊天库版本 4 增加 `indicator_draft` 条目，版本 1—3 原子迁移并保留消息标识、顺序及权限来源。指标工具只读目录、编译或准备代码草稿；`apply_indicator_to_chart` 也不直接保存或添加。预览编辑器检查会话、环境与目标图表，用户点击后才能保存并添加。
+
+服务选择器不提供语义不明的空项：新会话显示解析后的默认服务与模型，无服务或已绑定服务失效时禁用发送。首次发送固化 `provider_id` 与 `model`；后续请求保留已绑定模型，不随设置中的默认模型变化。有任何历史轮次时，显式切换服务或模型创建新会话，旧历史不发送给新服务。服务记录的 ID 必须与配置键一致。
+
+重新生成通过 `history_before_sequence` 将上下文限制在原目标轮次之前，重复重新生成沿用同一边界；旧轮次保留在本地。历史分页和压缩均遵守此边界，包含目标轮次的已有摘要不得复用；需要较早摘要时只用于该运行，不回退会话中已保存的摘要进度。
+
+运行中出现 SQLite 读写故障时，只停止聊天请求并禁用聊天入口，使用固定错误提示，避免数据库路径或异常正文进入公开消息。共享行情和交易服务继续运行；未能写入终态的轮次在下次启动时按中断恢复。
+
+运行层每 500ms 保存改变过的公开回答文本，终态立即保存；面板每 75ms 合并流式更新，完成后再渲染 Markdown。历史首屏只加载最近 5 轮，点击后继续分页；隐藏面板停止持续刷新，不取消请求。消息禁止读取本地或外部图片资源。Qt 业务信号使用 `event_received`，避免覆盖 `QObject.event()`。
+
+三种协议统一公开文本、完整工具参数、结束状态及错误，不显示或持久化私有推理。传输支持任意网络分块 SSE、非流式 JSON、取消、代理变更和超时；保留 TLS 校验，不自动跟随重定向或重试 POST。单帧上限 1MiB、整个响应上限 16MiB。Provider 只从凭据库读取密钥，错误使用固定消息，公开文本及工具参数在写入 Item 前脱敏。旧事件解读、报告和连接测试经 `LegacyAiAdapter` 共用 ProviderManager；`review.ai.AiClient` 及 `parse_draft()` 保留兼容。
+
+Chat Completions 服务能力由配置声明：`chat_token_field` 仅接受 `max_tokens`、`max_completion_tokens`、`omit`，`stream_usage` 控制 `stream_options.include_usage`。旧记录默认 `max_tokens`／`True`，其他协议不使用这些字段；设置页的高级兼容区默认收起，仅 Chat Completions 可用。不以模型名称推断能力，不因参数不兼容自动重发请求。
+
+工具串行运行，每轮最多 8 个工具循环、20 次调用，单工具默认超时 15 秒，整轮默认超时 180 秒；结果最多 64KiB，窗口较小时明确返回预算缺口。K 线最多 500 根且仅含已收盘数据，复用内存、MarketCache 和 HistoryLoader；指标与历史读取走现有 WorkQueue。账户／历史权限默认关闭，并在注册表执行前检查；关闭权限后整个相关历史轮次及摘要均不再发送。工具只读取当前 scope，行情历史工具拒绝借用 `replay:` 作用域访问实时数据。
+
+运行创建时记录单调时钟 deadline，每次模型请求将剩余毫秒经 ProviderManager、WireProvider 传到传输层，每次工具使用 `min(15000, remaining_ms)`。压缩及后续工具循环不重置 deadline，过期回调也会终止该轮；聊天不受传输层独立调用默认 90 秒的提前限制。
+
+交易工具使用 `review/query.py` 的 `JournalQuery` 先在 SQL 中筛选 scope、时间和合约，再复用 `journal.aggregate` 的既有归集与 Decimal 计算。主库启动检测 SQLite JSON 能力，按成交／账单时间、合约和本地订单关联字段建立部分表达式索引；不改变主库版本及记录格式，缺少 JSON 时主业务仍可用、依赖查询的工具明确失败。默认 30 天、最大 180 天、最多返回 50 笔；历史列表最多读取 `max(100, limit * 40)` 条成交，复盘最多 5000 条，每个查询实例解码量最多 8MiB。订单与笔记按关联 ID 查询，费用只读取所选交易的时间和合约范围；列表截断有明确标记，复盘遇到上限拒绝生成不完整统计。固定交易先按成交 ID 定位，再查询限定窗口；跨查询起点的未知仓位保留缺口，不计入完整交易统计。复盘页原有全量归集入口保持现有行为。
+
+上下文只自动包含图表范围、光标、报价来源与新鲜度；固定引用仍需对应读取权限。核心安全指令不可由用户模板覆盖，模板只作为任务预设。保留最近 12 轮，估算达到窗口的 70% 或超过轮数时压缩旧讨论；工具循环增长时也可触发压缩，保留当前工具消息及最近至少 4 轮。token 预算是保守估算，不是模型精确计数；无法安全压缩时明确提示缩小范围或新建对话。摘要只接受意图、问题、计划、结论和待确认事项，动态事实仍需当前工具确认。
+
+聊天生成结构化 `OrderDraft`，面板按钮只调用现有 `TradeController.load_draft()`；后续仍经过 `TradingService.prepare()` 和人工确认，实盘提交仍要求 `confirmed=True` 与既有模拟验收门槛。环境／账户变更、代理更新和设置保存先取消运行请求，使用会话、轮次、scope 和请求代次阻断旧回调。正常关闭标记取消；异常进程退出后恢复为 `interrupted`。
+
+自动化验证使用临时数据库、空凭据、模拟模型及本机 HTTP 服务：`uv run --locked --group dev pytest -q tests/ai tests/workbench/test_ai_chat.py`。这些测试不代表用户 AI 服务或真实账户已验收。
 
 ### 存储、资源与兼容
 
@@ -106,6 +138,7 @@
 | 交易与模拟盘 | `tests/trading/`、`tests/integration/test_cockpit.py`、`tests/integration/test_cockpit_network.py` |
 | 回放、回测与扫描 | `tests/research/`、`tests/integration/test_replay_cache.py`、`tests/integration/test_indicators_risk.py` |
 | 布局、工作区与共用样式 | `tests/workbench/`、`tests/ui/`，按需运行界面验证 |
+| AI 聊天、流式协议与工具 | `tests/ai/`、`tests/workbench/test_ai_chat.py`，离线聊天截图与节流测量 |
 | 自动更新 | `tests/updates/` 与离线更新界面验证 |
 
 业务代码交付前运行完整测试集；已通过且没有新改动或疑点时不重复检查。纯文档修改不要求运行应用、联网或打包。
@@ -115,11 +148,16 @@
 ```powershell
 uv run --locked python scripts/qa/verify_ui.py
 uv run --locked python scripts/qa/verify_workbench.py
+uv run --locked python scripts/qa/verify_ai_chat.py
+uv run --locked python scripts/qa/verify_indicators.py
 uv run --locked python scripts/qa/verify_paper.py
 uv run --locked python scripts/qa/verify_updates.py
 ```
 
 输出位于 `artifacts/`。界面改动应实际查看截图，不能仅凭脚本退出码判断布局正确。
+`verify_indicators.py` 验证主副图时间轴对齐、Pine 编译预览、行列诊断、布尔条件与 AI 草稿，并测量 5 万根脚本预热和 80 次末根修正。使用临时库、空凭据及模拟行情，不发起网络请求；普通图表性能继续使用 `benchmark_charts.py`。
+
+`verify_ai_chat.py` 使用临时数据和模拟模型生成工具、草稿、浮动面板及高级兼容设置截图，并测量公开文本的持续刷新和检查点频率。本次离线样例约 1.2 秒内合并 135 个 delta 为 15 次刷新（约 12.5 次／秒），保存 2 次检查点（约 1.7 次／秒），隐藏期间持续刷新为 0；结果不代表远程模型速度或完整端到端性能。
 
 公开接口检查脚本位于 `scripts/checks/`，会联网，只按涉及的网络改动选用。其结果不代表私有账户、真实交易或用户 AI 服务已验收。
 

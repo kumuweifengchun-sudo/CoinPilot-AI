@@ -1,0 +1,66 @@
+name: Windows 版本发布
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: 检查、构建并发布安装包
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: 安装 uv
+        run: python -m pip install uv==0.11.7
+      - name: 核对版本标签与发行说明
+        run: |
+          $version = (Get-Content pyproject.toml | Select-String '^version = "([0-9.]+)"$').Matches.Groups[1].Value
+          if ($env:GITHUB_REF_NAME -cne "v$version") { throw '标签与源码版本不一致' }
+          if (-not (Test-Path "docs/releases/v$version.md" -PathType Leaf)) { throw '缺少发行说明' }
+          "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
+      - name: 安装锁定的开发依赖
+        run: uv sync --locked --group dev
+      - name: 执行完整质量检查
+        run: .\scripts\checks\check_quality.ps1
+      - name: 安装固定版本 Inno Setup 6
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP 'innosetup-6.7.3.exe'
+          Invoke-WebRequest 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe' -OutFile $installer
+          if ((Get-FileHash $installer -Algorithm SHA256).Hash -ine '9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732') { throw 'Inno Setup 下载校验失败' }
+          $directory = Join-Path $env:RUNNER_TEMP 'InnoSetup6'
+          $process = Start-Process -FilePath $installer -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER', "/DIR=`"$directory`"") -WindowStyle Hidden -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw 'Inno Setup 安装失败' }
+          "INNO_ISCC=$directory\ISCC.exe" >> $env:GITHUB_ENV
+      - name: 构建并验证 Windows 安装包
+        run: .\scripts\release\build_installer.ps1 -Bump none -IsccPath $env:INNO_ISCC
+      - name: 核对源码及安装包校验文件
+        run: |
+          git diff --exit-code
+          if ($LASTEXITCODE -ne 0) { throw '构建修改了已跟踪源码' }
+          $setup = "dist/installer/CoinPilotAI-Setup-$env:RELEASE_VERSION-x64.exe"
+          $expected = (Get-Content "$setup.sha256" -Raw).Split(' ')[0].Trim()
+          if ((Get-FileHash $setup -Algorithm SHA256).Hash -ine $expected) { throw '安装包 SHA-256 不一致' }
+      - name: 发布正式版本及安装包附件
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $setup = "dist/installer/CoinPilotAI-Setup-$env:RELEASE_VERSION-x64.exe"
+          gh release create $env:GITHUB_REF_NAME $setup "$setup.sha256" --verify-tag --repo $env:GITHUB_REPOSITORY --title "CoinPilot AI $env:GITHUB_REF_NAME" --notes-file "docs/releases/v$env:RELEASE_VERSION.md" --latest
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub Release 发布失败' }

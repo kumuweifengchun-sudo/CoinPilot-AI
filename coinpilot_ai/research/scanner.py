@@ -1,11 +1,53 @@
 """OKX USDT 永续市场扫描；请求排队，未知值与不满足明确区分。"""
 import time
 from collections import deque
+from collections.abc import Callable, Mapping, Sequence
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 from coinpilot_ai.market.candles import valid_candles
 from coinpilot_ai.market.indicators import IndicatorRegistry
+from coinpilot_ai.indicators.catalog import BUILTIN_CATALOG, IndicatorCatalog
+from coinpilot_ai.indicators.conditions import compare_values, validate_condition
+from coinpilot_ai.indicators.runtime.engine import CandleInput
+from coinpilot_ai.indicators.runtime.result import IndicatorResult
+from coinpilot_ai.market.intervals import contiguous
+from coinpilot_ai.trading.models import number
+
+type IndicatorProvider = Callable[[tuple[str, str], Sequence[CandleInput], object], IndicatorResult]
+
+
+def indicator_match(rows: Sequence[CandleInput], condition: Mapping[str, object],
+                    provider: IndicatorProvider, pair: tuple[str, str], *,
+                    catalog: IndicatorCatalog = BUILTIN_CATALOG) -> bool | None:
+    validate_condition(condition, catalog)
+    latest = next((int(row[0]) for row in reversed(rows) if int(row[8]) == 1), None)
+    def values(spec: object, line: object) -> tuple[float | None, float | None] | None:
+        result = provider(pair, rows, spec)
+        indexes = [i for i in range(len(result.times)-1, -1, -1) if result.confirmed[i]][:2]
+        if len(indexes) < 2:
+            return None
+        current, previous = indexes
+        if result.times[current] != latest or not contiguous(result.times[previous], result.times[current], pair[1]):
+            return None
+        name = line if isinstance(line, str) else next(iter(result.lines), "")
+        output = result.lines.get(name)
+        return None if output is None else (output[previous], output[current])
+    left = values(condition.get("indicator"), condition.get("line"))
+    if left is None:
+        return None
+    op = condition.get("op")
+    if not isinstance(op, str):
+        raise ValueError("无效的指标比较方式")
+    other = condition.get("compare")
+    if isinstance(other, dict):
+        right = values(other.get("indicator"), other.get("line"))
+        if right is None:
+            return None
+    else:
+        threshold = None if op in ("is_true", "is_false") else float(number(condition.get("threshold")))
+        right = threshold, threshold
+    return compare_values(op, *left, *right)
 
 
 TEMPLATES = {
@@ -232,6 +274,13 @@ class MarketScanner(QObject):
             if ticker is None or now-ticker["time"] > 30:
                 state = "行情过期"
             accepted = matches(metrics, filters) if state == "就绪" else None
+            if accepted is True and filters.get("conditions"):
+                checks = [indicator_match(self.service.candles.get(pair, []), condition,
+                    self.service.chart_feed.rule_indicator, pair, catalog=self.service.indicator_catalog)
+                    for condition in filters["conditions"]]
+                accepted = False if False in checks else None if None in checks else True
+                if accepted is None:
+                    state = "指标预热或计算中"
             if accepted is False:
                 continue
             result.append((inst, ticker, metrics, state, accepted))

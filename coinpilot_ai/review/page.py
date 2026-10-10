@@ -1,7 +1,7 @@
 """交易复盘页面：时间范围、交易统计、日志与 AI 报告。"""
 import time
 
-from PyQt6.QtCore import QDateTime, Qt
+from PyQt6.QtCore import QDateTime, Qt, pyqtSignal
 from PyQt6.QtWidgets import (QAbstractItemView, QDateTimeEdit, QHBoxLayout, QLabel,
     QListWidget, QListWidgetItem, QSplitter, QTabWidget, QVBoxLayout, QWidget)
 
@@ -14,6 +14,8 @@ from .statistics import statistics, grouped_statistics
 
 
 class ReviewPage(QWidget):
+    chat_requested = pyqtSignal(str, str, str)
+
     def __init__(self, service, parent=None):
         super().__init__(parent)
         self.service = service
@@ -45,6 +47,7 @@ class ReviewPage(QWidget):
         layout.addWidget(self.trade_table, 2)
         layout.addWidget(QLabel("选中行则复盘所选交易；未选择则按时间范围。双击查看记录与数据缺口。"))
         layout.addWidget(button("编辑所选交易日志", self.edit_note))
+        layout.addWidget(button("继续与 AI 讨论所选交易", self.discuss_trade))
         self.stats_label = QLabel()
         self.stats_label.setWordWrap(True)
         layout.addWidget(self.stats_label)
@@ -62,6 +65,7 @@ class ReviewPage(QWidget):
         layout.addWidget(self.reports, 1)
         splitter.addWidget(left)
         self.ai_panel = AiPanel(service, "review", self.context)
+        self.ai_panel.chat_requested.connect(lambda key: self.chat_requested.emit("report", key, "复盘报告"))
         splitter.addWidget(self.ai_panel)
         splitter.setSizes([600, 560])
         root.addWidget(splitter)
@@ -126,6 +130,11 @@ class ReviewPage(QWidget):
         row = next((t for t in self.trades if t["id"] == key), None)
         if row:
             show_text(self, "交易记录与上下文", encode(row))
+
+    def discuss_trade(self) -> None:
+        key = selected_id(self.trade_table)
+        if key:
+            self.chat_requested.emit("trade", key, "交易复盘")
 
     def edit_note(self):
         key = selected_id(self.trade_table)

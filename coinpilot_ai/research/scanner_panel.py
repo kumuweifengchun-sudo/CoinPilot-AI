@@ -2,10 +2,12 @@
 from coinpilot_ai.ui.qt import require
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import (QCheckBox, QComboBox, QFormLayout, QHBoxLayout, QInputDialog,
-                             QLabel, QLineEdit, QScrollArea, QVBoxLayout, QWidget)
+                             QLabel, QLineEdit, QListWidget, QScrollArea, QVBoxLayout, QWidget)
 
 from .scanner import MarketScanner, TEMPLATES
 from coinpilot_ai.ui.common import button, fill_table, selected_id, table
+from coinpilot_ai.indicators.conditions import spec_title, validate_condition
+from coinpilot_ai.trading.dialogs import IndicatorConditionDialog
 
 
 class ScannerPanel(QWidget):
@@ -37,6 +39,14 @@ class ScannerPanel(QWidget):
         filter_scroll.setMaximumHeight(200)
         filter_scroll.setWidget(filter_host)
         root.addWidget(filter_scroll)
+        self.indicator_conditions: list[dict[str, object]] = []
+        self.indicator_list = QListWidget()
+        self.indicator_list.setMaximumHeight(90)
+        root.addWidget(self.indicator_list)
+        indicator_actions = QHBoxLayout()
+        indicator_actions.addWidget(button("添加指标输出条件", self.add_indicator))
+        indicator_actions.addWidget(button("删除所选条件", self.remove_indicator))
+        root.addLayout(indicator_actions)
         actions = QHBoxLayout()
         actions.addWidget(button("应用筛选", self.refresh))
         actions.addWidget(button("保存模板…", self.save_template))
@@ -75,6 +85,8 @@ class ScannerPanel(QWidget):
                 widget.setChecked(bool(filters.get(key, False)))
             else:
                 widget.setText(str(filters.get(key, "")))
+        self.indicator_conditions = list(filters.get("conditions", []))
+        self.refresh_indicator_conditions()
         self.refresh()
 
     def current_filters(self):
@@ -88,10 +100,43 @@ class ScannerPanel(QWidget):
                 if not 0 <= value <= 100000:
                     raise ValueError("筛选阈值必须在 0—100000 之间")
                 result[key] = value
+        if len(self.indicator_conditions) > 8:
+            raise ValueError("最多设置 8 个指标输出条件")
+        for condition in self.indicator_conditions:
+            validate_condition(condition, self.service.indicator_catalog)
+        if self.indicator_conditions:
+            result["conditions"] = list(self.indicator_conditions)
         return result
+
+    def refresh_indicator_conditions(self) -> None:
+        self.indicator_list.clear()
+        for condition in self.indicator_conditions:
+            self.indicator_list.addItem(f"{spec_title(condition.get('indicator'), self.service.indicator_catalog)} "
+                                       f"{condition.get('line', '')} · {condition.get('op', '')}")
+
+    def add_indicator(self) -> None:
+        if len(self.indicator_conditions) >= 8:
+            self.status.setText("最多设置 8 个指标输出条件")
+            return
+        dialog = IndicatorConditionDialog(parent=self, catalog=self.service.indicator_catalog)
+        # 扫描器按既有 15m 排队，不另行请求任意周期行情。
+        dialog.bar.setCurrentIndex(dialog.bar.findData("15m"))
+        dialog.bar.setEnabled(False)
+        if dialog.exec() and dialog.condition is not None:
+            self.indicator_conditions.append(dialog.condition)
+            self.refresh_indicator_conditions()
+            self.refresh()
+
+    def remove_indicator(self) -> None:
+        index = self.indicator_list.currentRow()
+        if index >= 0:
+            self.indicator_conditions.pop(index)
+            self.refresh_indicator_conditions()
+            self.refresh()
 
     def export_state(self):
         return {"version": 1, "template": self.templates.currentText(),
+                "conditions": list(self.indicator_conditions),
                 "filters": {key: widget.isChecked() if isinstance(widget, QCheckBox) else widget.text()
                             for key, widget in self.filters.items()}}
 
@@ -110,6 +155,8 @@ class ScannerPanel(QWidget):
                 widget.setChecked(bool(value))
             elif widget is not None:
                 widget.setText(str(value))
+        self.indicator_conditions = list(state.get("conditions", []))
+        self.refresh_indicator_conditions()
         self.refresh()
 
     def save_template(self):

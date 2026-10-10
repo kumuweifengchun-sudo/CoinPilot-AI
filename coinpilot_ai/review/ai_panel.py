@@ -11,6 +11,7 @@ from coinpilot_ai.ui.common import button, show_text
 
 class AiPanel(QGroupBox):
     draft_ready = pyqtSignal(object)
+    chat_requested = pyqtSignal(str)
 
     def __init__(self, service, scene, context_provider, parent=None):
         super().__init__({"event": "AI · 事件解读", "order": "AI · 交易计划", "review": "AI · 自定义复盘"}[scene], parent)
@@ -56,6 +57,7 @@ class AiPanel(QGroupBox):
             layout.addWidget(self.load_draft_button)
         if scene == "review":
             layout.addWidget(button("针对当前报告追问", self.followup))
+            layout.addWidget(button("继续与聊天助手讨论", self.discuss_report))
         root.addWidget(self.body)
         self.toggled.connect(self.set_expanded)
         self.setChecked(scene == "review")
@@ -67,6 +69,10 @@ class AiPanel(QGroupBox):
         self.body.setVisible(expanded)
         self.setMaximumHeight(16777215 if expanded else 36)
         self.updateGeometry()
+
+    def discuss_report(self) -> None:
+        if self.last_record and self.last_record.get("id"):
+            self.chat_requested.emit(self.last_record["id"])
 
     def reload_templates(self):
         old = self.templates.currentData()

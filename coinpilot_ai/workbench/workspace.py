@@ -112,7 +112,7 @@ class WorkspaceLayout(QObject):
         self.host.splitDockWidget(ai, market, Qt.Orientation.Horizontal)
         self.host.splitDockWidget(market, order, Qt.Orientation.Horizontal)
         self.host.splitDockWidget(market, info, Qt.Orientation.Vertical)
-        self.host.resizeDocks([ai, market, order], [240, 820, 320], Qt.Orientation.Horizontal)
+        self.host.resizeDocks([ai, market, order], [320, 740, 320], Qt.Orientation.Horizontal)
         self.host.resizeDocks([market, info], [540, 180], Qt.Orientation.Vertical)
         self.desired = dict.fromkeys(self.docks, True)
         for dock in self.docks.values():
@@ -129,7 +129,7 @@ class WorkspaceLayout(QObject):
             return
         self.pending_default = False
         self.host.resizeDocks([self.docks[k] for k in ('ai', 'market', 'order')],
-                              [200, max(400, self.host.width()-530), 320], Qt.Orientation.Horizontal)
+                              [320, max(400, self.host.width()-650), 320], Qt.Orientation.Horizontal)
         self.host.resizeDocks([self.docks[k] for k in ('market', 'info')],
                               [max(240, self.host.height()-190), 180], Qt.Orientation.Vertical)
         require(self.host.layout()).activate()

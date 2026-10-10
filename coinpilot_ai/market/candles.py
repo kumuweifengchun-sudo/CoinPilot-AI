@@ -15,6 +15,9 @@ from coinpilot_ai.market.intervals import BARS, shift, floor_time, openings
 from .series import ChartSeries
 
 from .buffer import CandleBuffer, CandleIndex, candle, candles as valid_candles
+from coinpilot_ai.indicators.models import IndicatorCacheKey
+from coinpilot_ai.indicators.validation import runtime_instance
+from coinpilot_ai.indicators.runtime.result import IndicatorResultMetadata
 
 
 class CandleStream(QObject):
@@ -145,6 +148,7 @@ class ChartFeed(QObject):
         self.series = {}
         self.indicator_cache = {}
         self.indicator_pending = {}
+        self.indicator_snapshots: dict[tuple[str, str], tuple[int, int, CandleBuffer]] = {}
         self.raw_indexes = {}
         self.recent_pairs = OrderedDict()
         service.chart_book.changed.connect(self.settings_changed)
@@ -195,7 +199,7 @@ class ChartFeed(QObject):
                 if pending[0] == pair:
                     self.service.compute.cancel(token)
                     self.indicator_pending.pop(pending)
-            for cache in (s.candles, s.candle_times, self.raw_indexes, self.indicator_cache,
+            for cache in (s.candles, s.candle_times, self.raw_indexes, self.indicator_cache, self.indicator_snapshots,
                           self.revisions, self.history_state, self.pair_status, self.view_windows):
                 cache.pop(pair, None)
             for cache in (self.stream_versions, self.window_attempts):
@@ -229,11 +233,11 @@ class ChartFeed(QObject):
         return start, dropped
 
     def indicator(self, series, spec):
-        from coinpilot_ai.market.indicators import IndicatorState, IndicatorResult, validate_spec
-        normalized = validate_spec(spec)
+        from coinpilot_ai.market.indicators import IndicatorState, IndicatorResult
+        instance = runtime_instance(spec, self.service.indicator_catalog)
         pair = series.pair
         values = self.indicator_cache.setdefault(pair, OrderedDict())
-        key = (normalized["kind"], tuple(sorted(normalized["params"].items())))
+        key = IndicatorCacheKey.of(instance, pair[1])
         cached = values.get(key)
         if cached is not None and cached[0] == series.revision:
             values.move_to_end(key)
@@ -248,9 +252,14 @@ class ChartFeed(QObject):
                 return state.result
         pending = pair, key
         if pending not in self.indicator_pending:
-            snapshot, revision, generation = CandleBuffer(series.data.rows), series.revision, self.generation
+            revision, generation = series.revision, self.generation
+            saved = self.indicator_snapshots.get(pair)
+            if saved is None or saved[:2] != (revision, generation):
+                saved = (revision, generation, CandleBuffer(series.data.rows))
+                self.indicator_snapshots[pair] = saved
+            snapshot = saved[2]
             def build():
-                state = IndicatorState(normalized, bar=pair[1])
+                state = IndicatorState(instance, bar=pair[1], catalog=self.service.indicator_catalog)
                 state.update(snapshot, 0)
                 return state
             def ready(state, error):
@@ -261,7 +270,7 @@ class ChartFeed(QObject):
                     delta = self.indicator_delta(series, revision)
                     if (delta is None or len(series.data.rows)-delta[0] > 128 or
                             delta[0] < max(0, len(state.times)-delta[1]-1)):
-                        self.indicator(series, normalized)
+                        self.indicator(series, instance)
                         return
                     state.update(series.data.rows, delta[0], dropped=delta[1])
                 values[key] = (series.revision, state)
@@ -271,7 +280,9 @@ class ChartFeed(QObject):
                 self.indicators_changed.emit(pair)
                 self.service.updated.emit("indicators")
             self.indicator_pending[pending] = self.service.compute.submit(build, ready)
-        return IndicatorResult(normalized["kind"], (), {}, ())
+        definition = self.service.indicator_catalog.resolve(instance.definition, instance.definition_revision)
+        return IndicatorResult(definition.name, (), {}, (), definition.id, definition.revision,
+                               IndicatorResultMetadata({out.id: out.type for out in definition.outputs}, pair[1]))
 
     def set_view(self, owner, pair=None, left=None, count=0):
         """一个图窗只拥有自己的登记，跟随实时/隐藏/切换时不影响其他图窗。"""
@@ -661,6 +672,7 @@ class ChartFeed(QObject):
             series.deleteLater()
         self.series.clear()
         self.indicator_cache.clear()
+        self.indicator_snapshots.clear()
         for token in self.indicator_pending.values():
             self.service.compute.cancel(token)
         self.indicator_pending.clear()

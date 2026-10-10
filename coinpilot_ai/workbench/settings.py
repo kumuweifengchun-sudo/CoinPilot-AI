@@ -2,13 +2,14 @@
 import uuid
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QCheckBox, QDialog, QFormLayout, QInputDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QScrollArea, QStackedWidget, QTextEdit, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QCheckBox, QDialog, QFormLayout, QInputDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QScrollArea, QSpinBox, QStackedWidget, QTextEdit, QVBoxLayout, QWidget
 
 from coinpilot_ai.review.ai import DEFAULT_PROMPTS, SCENARIOS, service_url
 from coinpilot_ai.application.service import DEMO_CHECKS
 from coinpilot_ai.ui.common import button, combo, select_data, show_text
 from coinpilot_ai.trading.dialogs import RuleDialog
 from coinpilot_ai.ui.icons import icon
+from coinpilot_ai.ai.providers.base import ProviderConfig
 
 
 def secret_edit(placeholder="留空保留已保存的密钥"):
@@ -239,10 +240,45 @@ class SettingsPage(QWidget):
         self.base_url.setPlaceholderText("https://服务地址/v1")
         self.model = QLineEdit()
         self.model.setPlaceholderText("填写服务实际支持的模型名称")
+        self.chat_model = QLineEdit()
+        self.chat_model.setPlaceholderText("留空使用上方模型")
+        self.context_window = QSpinBox()
+        self.context_window.setRange(4096, 2000000)
+        self.context_window.setValue(32768)
+        self.output_tokens = QSpinBox()
+        self.output_tokens.setRange(256, 32767)
+        self.output_tokens.setValue(4096)
+        self.context_window.valueChanged.connect(lambda value: self.output_tokens.setMaximum(min(32767, value - 1)))
+        self.stream_output = QCheckBox("流式输出")
+        self.stream_output.setChecked(True)
+        self.tool_calling = QCheckBox("允许工具调用")
+        self.tool_calling.setChecked(True)
+        self.allow_account = QCheckBox("允许读取账户与仓位（发送给此 AI 服务）")
+        self.allow_history = QCheckBox("允许读取交易历史与复盘（发送给此 AI 服务）")
         self.ai_key = secret_edit()
         for title, widget in (("名称", self.provider_name), ("协议", self.protocol), ("接口地址", self.base_url), ("模型", self.model), ("API Key", self.ai_key)):
             form.addRow(title, widget)
+        for title, widget in (("默认聊天模型", self.chat_model), ("上下文窗口（token）", self.context_window),
+                              ("最大输出（token）", self.output_tokens), ("", self.stream_output), ("", self.tool_calling),
+                              ("", self.allow_account), ("", self.allow_history)):
+            form.addRow(title, widget)
         layout.addLayout(form)
+        self.chat_advanced_button = button("Chat Completions 高级兼容设置", lambda: None)
+        self.chat_advanced_button.setCheckable(True)
+        self.chat_advanced = QWidget()
+        advanced = QFormLayout(self.chat_advanced)
+        self.chat_token_field = combo([("max_tokens", "max_tokens（默认兼容模式）"),
+                                      ("max_completion_tokens", "max_completion_tokens"), ("omit", "不发送 token 上限")])
+        self.stream_usage = QCheckBox("请求流式 token 用量（stream_options）")
+        self.stream_usage.setChecked(True)
+        advanced.addRow("Token 上限参数", self.chat_token_field)
+        advanced.addRow("", self.stream_usage)
+        self.chat_advanced.hide()
+        self.chat_advanced_button.toggled.connect(self.chat_advanced.setVisible)
+        self.protocol.currentIndexChanged.connect(self.update_chat_options)
+        layout.addWidget(self.chat_advanced_button)
+        layout.addWidget(self.chat_advanced)
+        self.update_chat_options()
         buttons = QHBoxLayout()
         buttons.addWidget(button("新建服务", self.new_provider))
         buttons.addWidget(button("保存服务", lambda: self.run(self.save_provider), True))
@@ -251,6 +287,8 @@ class SettingsPage(QWidget):
         layout.addLayout(buttons)
         self.scene_services, self.scene_templates = {}, {}
         mappings = QFormLayout()
+        self.default_chat = combo([])
+        mappings.addRow("默认聊天服务", self.default_chat)
         for key, label in SCENARIOS.items():
             row = QHBoxLayout()
             provider, template = combo([]), combo([])
@@ -264,8 +302,23 @@ class SettingsPage(QWidget):
 
     def new_provider(self):
         self.provider_id = None
-        for edit in (self.provider_name, self.base_url, self.model, self.ai_key):
+        for edit in (self.provider_name, self.base_url, self.model, self.chat_model, self.ai_key):
             edit.clear()
+        self.context_window.setValue(32768)
+        self.output_tokens.setValue(4096)
+        self.stream_output.setChecked(True)
+        self.tool_calling.setChecked(True)
+        self.allow_account.setChecked(False)
+        self.allow_history.setChecked(False)
+        select_data(self.chat_token_field, "max_tokens")
+        self.stream_usage.setChecked(True)
+        self.chat_advanced_button.setChecked(False)
+
+    def update_chat_options(self) -> None:
+        enabled = self.protocol.currentData() == "chat"
+        self.chat_advanced_button.setEnabled(enabled)
+        if not enabled:
+            self.chat_advanced_button.setChecked(False)
 
     def load_provider(self):
         if self.service.closed:
@@ -279,6 +332,14 @@ class SettingsPage(QWidget):
         self.provider_name.setText(row["name"])
         self.base_url.setText(row["base_url"])
         self.model.setText(row["model"])
+        self.chat_model.setText(row.get("chat_model", ""))
+        self.context_window.setValue(row.get("context_window", 32768))
+        self.output_tokens.setValue(row.get("max_output_tokens", 4096))
+        select_data(self.chat_token_field, row.get("chat_token_field", "max_tokens"))
+        self.stream_usage.setChecked(row.get("stream_usage", True))
+        for control, name, default in ((self.stream_output, "stream", True), (self.tool_calling, "tools", True),
+                                       (self.allow_account, "allow_account", False), (self.allow_history, "allow_history", False)):
+            control.setChecked(row.get(name, default))
         select_data(self.protocol, row["protocol"])
         self.ai_key.clear()
 
@@ -287,15 +348,25 @@ class SettingsPage(QWidget):
         if not self.provider_name.text().strip() or not self.model.text().strip():
             raise ValueError("请填写服务名称与模型")
         key = self.provider_id or uuid.uuid4().hex
+        row = {"id": key, "name": self.provider_name.text().strip(), "protocol": self.protocol.currentData(),
+               "base_url": self.base_url.text().strip().rstrip("/"), "model": self.model.text().strip(),
+               "chat_model": self.chat_model.text().strip(), "context_window": self.context_window.value(),
+               "max_output_tokens": self.output_tokens.value(), "stream": self.stream_output.isChecked(),
+               "tools": self.tool_calling.isChecked(), "allow_account": self.allow_account.isChecked(),
+               "allow_history": self.allow_history.isChecked(), "chat_token_field": self.chat_token_field.currentData(),
+               "stream_usage": self.stream_usage.isChecked()}
+        ProviderConfig.from_record(row)
         if self.ai_key.text().strip():
             self.service.vault.write("ai/" + key, {"key": self.ai_key.text().strip()})
-        row = {"id": key, "name": self.provider_name.text().strip(), "protocol": self.protocol.currentData(),
-               "base_url": self.base_url.text().strip().rstrip("/"), "model": self.model.text().strip()}
+        if self.service.ai_chat is not None:
+            self.service.ai_chat.cancel()
+        self.service.ai.cancel_all()
         self.service.store.put("ai_service", key, row)
         self.provider_id = key
         self.reload_providers()
         select_data(self.providers, key)
         self.feedback.setText("服务已保存；密钥保存在 Windows 凭据管理器")
+        self.service.updated.emit("ai_settings")
 
     def test_provider(self):
         config = self.service.store.get("ai_service", self.provider_id)
@@ -306,7 +377,9 @@ class SettingsPage(QWidget):
 
     def save_mappings(self):
         self.service.settings["scenes"] = {key: {"service": self.scene_services[key].currentData(), "template": self.scene_templates[key].currentData()} for key in SCENARIOS}
+        self.service.settings["chat_service"] = self.default_chat.currentData() or ""
         self.service.save_settings()
+        self.service.updated.emit("ai_settings")
         self.feedback.setText("各场景配置已保存")
 
     def _prompts(self):
@@ -361,6 +434,7 @@ class SettingsPage(QWidget):
         select_data(self.templates, key)
         self.reload_mappings()
         self.feedback.setText("提示词新版本已保存；历史报告仍保留原版本")
+        self.service.updated.emit("ai_settings")
 
     def _rules(self):
         layout = self.page("提醒规则")
@@ -425,6 +499,11 @@ class SettingsPage(QWidget):
         self.reload_mappings()
 
     def reload_mappings(self):
+        self.default_chat.clear()
+        self.default_chat.addItem("自动选择最近配置的服务", "")
+        for key, row in self.service.store.list("ai_service"):
+            self.default_chat.addItem(row["name"], key)
+        select_data(self.default_chat, self.service.settings.get("chat_service", ""))
         for scene in SCENARIOS:
             provider, template = self.scene_services[scene], self.scene_templates[scene]
             provider.clear()

@@ -7,6 +7,7 @@ from typing import Any
 from dataclasses import asdict, is_dataclass
 from decimal import Decimal
 from pathlib import Path
+from coinpilot_ai.review.query import ensure_journal_indexes
 
 
 def encode(value):
@@ -34,6 +35,7 @@ class Store:
             CREATE INDEX IF NOT EXISTS record_time ON records(scope,kind,updated);
             PRAGMA user_version=1;
         """)
+        ensure_journal_indexes(self.db)
 
     def put(self, kind, key, value, scope="global"):
         with self.db:

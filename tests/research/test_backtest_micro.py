@@ -49,7 +49,7 @@ def test_book_sequence_gap_and_trade_profile():
     assert (require(profile)["poc"], require(profile)["val"], require(profile)["vah"]) == (Decimal("101"), Decimal("101"), Decimal("102"))
 
 
-@pytest.mark.parametrize("kind", ["MA", "EMA", "BOLL", "MACD", "RSI", "ATR", "STOCHASTIC", "VWAP", "SUPERTREND", "VOLUME_MA"])
+@pytest.mark.parametrize("kind", ["MA", "EMA", "BOLL", "DONCHIAN", "MACD", "RSI", "ATR", "STOCHASTIC", "VWAP", "SUPERTREND", "VOLUME_MA"])
 def test_streaming_backtest_matches_batch_indicator_oracle(kind, monkeypatch):
     import math
     from types import SimpleNamespace
@@ -62,12 +62,13 @@ def test_streaming_backtest_matches_batch_indicator_oracle(kind, monkeypatch):
     spec = {"ctType": "linear", "settleCcy": "USDT", "ctVal": "1", "lotSz": "1", "minSz": "1"}
     actual = run_backtest(rows, strategy, spec)
     class BatchOracle:
-        def __init__(self, spec, bar):
+        def __init__(self, spec, bar, *, catalog):
             self.spec, self.bar, self.rows = spec, bar, []
+            self.catalog = catalog
             self.state = SimpleNamespace(result=None)
         def push(self, row):
             self.rows.append(row)
-            self.state.result = calculate(self.rows, self.spec, bar=self.bar)
+            self.state.result = calculate(self.rows, self.spec, bar=self.bar, catalog=self.catalog)
     monkeypatch.setattr(backtest, "IndicatorStream", BatchOracle)
     assert actual == run_backtest(rows, strategy, spec)
 

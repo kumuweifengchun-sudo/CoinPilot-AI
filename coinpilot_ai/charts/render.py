@@ -18,7 +18,10 @@ from coinpilot_ai.market.buffer import ValueView
 from coinpilot_ai.ui.theme import color
 from .position import POSITION_TOOLS, position_metrics
 from .pattern import projected_prices
-from .state import Drawing
+from .plots import draw_plot
+from .state import Drawing, legacy_ema_is_represented
+from coinpilot_ai.indicators.catalog import BUILTIN_CATALOG
+from coinpilot_ai.indicators.validation import instance_from_record
 
 
 type LayerKey = tuple[int, int, float, str, int, str, float | None, float, float, float, float, int]
@@ -426,9 +429,8 @@ class ChartRenderer:
         for setting, values in zip(self.emas, self.ema_cache):
             if not setting["visible"]:
                 continue
-            if any(item["kind"] == "EMA" and item["params"]["period"] == setting["period"]
-                   and item["color"] == setting["color"] and item["width"] == setting["width"]
-                   for item, _ in self.indicator_results):
+            if legacy_ema_is_represented(setting, [item for item, _ in self.indicator_results],
+                                        self.book.catalog if self.book else BUILTIN_CATALOG):
                 continue
             path = QPainterPath()
             for offset, x in enumerate(xs):
@@ -441,25 +443,15 @@ class ChartRenderer:
             p.setPen(QPen(QColor(setting["color"]), setting["width"]))
             p.drawPath(path)
         for setting, result in self.indicator_results:
-            if setting["kind"] not in ("MA", "EMA", "BOLL", "VWAP", "SUPERTREND"):
-                continue
-            for values in result.lines.values():
-                path = QPainterPath()
-                active = False
-                for offset, x in enumerate(xs):
-                    i = start+offset
-                    value = values[i] if i < len(values) else None
-                    if value is None:
-                        active = False
-                        continue
-                    y = bottom-(value-low)*sy
-                    if not active or i == 0 or not contiguous(self.times[i-1], self.times[i], self.render_bar):
-                        path.moveTo(x, y)
-                    else:
-                        path.lineTo(x, y)
-                    active = True
-                p.setPen(QPen(QColor(setting["color"]), setting["width"]))
-                p.drawPath(path)
+            catalog = self.book.catalog if self.book else BUILTIN_CATALOG
+            instance = instance_from_record(setting, catalog)
+            definition = catalog.resolve(instance.definition, instance.definition_revision)
+            for plot in definition.plots:
+                if plot.target == "overlay":
+                    draw_plot(p, plot, result.outputs.get(plot.output, ()), self.times, start=start, end=end,
+                        x_at=lambda i: main.left() + (self.times[i]-self.left_time)/interval*step + step*.5,
+                        y_at=lambda value: bottom-(value-low)*sy, bounds=main, style=instance.plots[plot.id],
+                        bar=self.render_bar, bar_width=max(1., step*.64))
         p.restore()
 
     def object_layers(self):

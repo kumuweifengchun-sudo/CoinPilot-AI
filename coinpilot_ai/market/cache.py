@@ -237,7 +237,7 @@ class HistoryLoader(QObject):
         self.job = None
 
     def load(self, instrument, bar, begin, end):
-        if bar not in BARS or begin >= end:
+        if bar not in BARS or begin > end:
             raise ValueError("回放时间范围无效")
         self.cancel()
         self.active = True

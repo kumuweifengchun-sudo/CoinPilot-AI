@@ -1,12 +1,20 @@
 """图表的持久化状态。锚点保存交易所毫秒时间与价格，不保存屏幕像素。"""
 from copy import deepcopy
+from collections.abc import Mapping, Sequence
 import math
 import uuid
-from typing import NotRequired, TypedDict
+from typing import TYPE_CHECKING, NotRequired, TypedDict
+
+if TYPE_CHECKING:
+    from coinpilot_ai.application.service import CockpitService
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from coinpilot_ai.market.intervals import BARS
+from coinpilot_ai.indicators.catalog import BUILTIN_CATALOG, IndicatorCatalog
+from coinpilot_ai.indicators.models import InputValue
+from coinpilot_ai.indicators.validation import instance_from_record, instance_record, migrate_instances
+from coinpilot_ai.core.store import Store
 from coinpilot_ai.ui.theme import color as theme_color
 from .position import POSITION_TOOLS
 
@@ -14,11 +22,15 @@ from .position import POSITION_TOOLS
 class IndicatorSetting(TypedDict):
     id: str
     kind: str
-    params: dict[str, int | float]
+    params: dict[str, InputValue]
     bar: str
     color: str
     width: float
     visible: bool
+    definition: NotRequired[str]
+    definition_revision: NotRequired[int]
+    inputs: NotRequired[dict[str, InputValue]]
+    plots: NotRequired[dict[str, dict[str, object]]]
 
 
 class FibLevel(TypedDict):
@@ -99,21 +111,35 @@ def validate_emas(items):
     return result
 
 
-def normalize_indicators(items):
-    from coinpilot_ai.market.indicators import validate_spec
-    cleaned = []
+def normalize_indicators(items: object, catalog: IndicatorCatalog = BUILTIN_CATALOG) -> list[IndicatorSetting]:
+    if not isinstance(items, list) or len(items) > 128:
+        raise ValueError("指标实例列表无效或过多")
+    cleaned: list[IndicatorSetting] = []
     for item in items:
-        spec = validate_spec(item)
-        bar = item.get("bar", "chart")
-        if bar != "chart" and bar not in BARS:
-            raise ValueError("无效的指标周期")
-        width = float(item.get("width", 1.5))
-        if not math.isfinite(width) or not .5 <= width <= 6:
-            raise ValueError("线宽须为 0.5—6")
-        cleaned.append({"id": str(item["id"]), **spec, "bar": bar,
-                        "color": str(item.get("color", "#35a4ff")),
-                        "width": width, "visible": bool(item.get("visible", True))})
+        instance = instance_from_record(item, catalog)
+        definition = catalog.resolve(instance.definition, instance.definition_revision)
+        style = next(iter(instance.plots.values()), None)
+        cleaned.append({"id": instance.id, "definition": instance.definition,
+                        "definition_revision": instance.definition_revision, "inputs": dict(instance.inputs),
+                        "plots": {key: {"visible": value.visible, "color": value.color, "width": value.width}
+                                  for key, value in instance.plots.items()},
+                        "kind": definition.name, "params": dict(instance.inputs), "bar": instance.timeframe,
+                        "color": style.color if style else "#35a4ff", "width": style.width if style else 1.5,
+                        "visible": instance.visible})
     return cleaned
+
+
+def legacy_ema_is_represented(ema: Mapping[str, object], settings: Sequence[IndicatorSetting],
+                              catalog: IndicatorCatalog) -> bool:
+    """旧 EMA 设置的去重桥；通用绘制层不需要识别内置指标名。"""
+    definition = catalog.legacy("EMA")
+    for setting in settings:
+        instance = instance_from_record(setting, catalog)
+        if instance.definition == definition.id and instance.inputs.get("period") == ema.get("period"):
+            style = instance.plots.get("value")
+            if style is not None and style.color == ema.get("color") and style.width == ema.get("width"):
+                return True
+    return False
 
 
 def ema_values(closes, period):
@@ -130,9 +156,12 @@ def ema_values(closes, period):
 class ChartBook(QObject):
     changed = pyqtSignal(str, object)
 
-    def __init__(self, store, parent=None):
+    def __init__(self, store: Store, parent: QObject | None = None, *, catalog: IndicatorCatalog = BUILTIN_CATALOG,
+                 service: "CockpitService | None" = None) -> None:
         super().__init__(parent)
         self.store = store
+        self.catalog = catalog
+        self.service = service
         self.undo_stacks, self.redo_stacks = {}, {}
         self.cache = {}
         self.emas = store.get("chart_settings", "ema", default_emas())
@@ -142,7 +171,17 @@ class ChartBook(QObject):
                            "color": row["color"], "width": row["width"], "visible": row["visible"]}
                           for row in self.emas]
             store.put("chart_settings", "indicators_v1", indicators)
-        self.indicators = indicators
+        v2 = store.get("chart_settings", "indicators_v2")
+        self.indicator_error = ""
+        try:
+            migrated = migrate_instances(v2 if v2 is not None else indicators, catalog)
+            if v2 is None:
+                store.put("chart_settings", "indicators_v2", migrated)
+            self.indicators = normalize_indicators(migrated["items"], catalog)
+        except ValueError:
+            # 不覆盖不可解析的旧记录，避免脚本错误阻断行情及手工交易。
+            self.indicator_error = "指标配置含不可用定义或版本，请检查我的指标；原配置已保留"
+            self.indicators = []
         self.magnet_enabled = store.get("chart_settings", "magnet", True) is not False
 
     def save_magnet(self, enabled):
@@ -197,9 +236,10 @@ class ChartBook(QObject):
         self.store.put("chart_settings", "ema", self.emas)
         self.changed.emit("ema", None)
 
-    def save_indicators(self, items):
-        cleaned = normalize_indicators(items)
-        self.store.put("chart_settings", "indicators_v1", cleaned)
+    def save_indicators(self, items: object) -> None:
+        cleaned = normalize_indicators(items, self.catalog)
+        self.store.put("chart_settings", "indicators_v2", {"version": 2, "items": [
+            instance_record(instance_from_record(item, self.catalog)) for item in cleaned]})
         self.indicators = cleaned
         self.changed.emit("indicators", None)
 

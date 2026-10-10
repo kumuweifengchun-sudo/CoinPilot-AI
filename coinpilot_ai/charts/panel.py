@@ -2,6 +2,8 @@
 import time
 from copy import deepcopy
 from dataclasses import replace
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import QDateTime, Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (QButtonGroup, QComboBox, QHBoxLayout, QLabel, QMenu, QPushButton, QScrollArea, QSizePolicy, QSplitter,
@@ -16,11 +18,15 @@ from .derivative_strip import DerivativeStrip
 from .instrument_selector import InstrumentSelector
 from coinpilot_ai.market.intervals import BARS, QUICK_BARS
 from coinpilot_ai.market.lod import display_bar
-from coinpilot_ai.charts.state import TOOLS, trade_lines, normalize_indicators
+from coinpilot_ai.charts.state import IndicatorSetting, TOOLS, trade_lines, normalize_indicators
+from coinpilot_ai.indicators.validation import instance_from_record, instance_record, migrate_instances
 from coinpilot_ai.charts.position import POSITION_TOOLS, position_metrics, position_summary
 from coinpilot_ai.trading.models import instrument_id
 from coinpilot_ai.ui.icons import icon, set_button_icon
 from coinpilot_ai.ui.theme import chart_controls_style, events
+
+if TYPE_CHECKING:
+    from coinpilot_ai.application.service import CockpitService
 
 
 class SavedSplitter(QSplitter):
@@ -44,16 +50,25 @@ class SavedSplitter(QSplitter):
 
 class PaneIndicators:
     """单个图窗的指标配置，编辑接口与共享 ChartBook 保持一致。"""
-    def __init__(self, service, key, changed):
+    def __init__(self, service: "CockpitService", key: str, changed: Callable[[], None]) -> None:
         self.service, self.key, self.changed = service, key, changed
+        self.catalog = service.indicator_catalog
+        self.indicator_error = ""
         record = service.store.get("chart_indicators", key)
-        self.indicators = deepcopy(record["items"] if record and record.get("version") == 1
-                                   else service.chart_book.indicators)
+        try:
+            migrated = migrate_instances(record if record else service.chart_book.indicators, self.catalog)
+            if record and record.get("version") == 1:
+                service.store.put("chart_indicators_backup_v1", key, record)
+            service.store.put("chart_indicators", key, migrated)
+            self.indicators: list[IndicatorSetting] = normalize_indicators(migrated["items"], self.catalog)
+        except ValueError:
+            self.indicator_error = "指标配置含不可用定义或版本，原配置已保留"
+            self.indicators = []
 
-    def save_indicators(self, items):
-        self.indicators = normalize_indicators(items)
-        self.service.store.put("chart_indicators", self.key, {"version": 1,
-                                                                "items": deepcopy(self.indicators)})
+    def save_indicators(self, items: object) -> None:
+        self.indicators = normalize_indicators(items, self.catalog)
+        self.service.store.put("chart_indicators", self.key, {"version": 2, "items": [
+            instance_record(instance_from_record(item, self.catalog)) for item in self.indicators]})
         self.changed()
 
 
@@ -226,16 +241,24 @@ class ChartPanel(QWidget):
         self.canvas.view_changed.connect(lambda: self.auto_button.setChecked(self.canvas.auto_scale))
         self.canvas.view_changed.connect(self.schedule_range)
         row.addWidget(self.canvas, 1)
-        root.addLayout(row, 1)
+        self.plot_splitter = SavedSplitter(Qt.Orientation.Vertical, service,
+                                           "indicator-area/" + (local_key or "main"), self)
+        price_host = QWidget()
+        price_host.setLayout(row)
+        self.plot_splitter.addWidget(price_host)
+        root.addWidget(self.plot_splitter, 1)
         self.indicator_scroll = QScrollArea()
         self.indicator_scroll.setWidgetResizable(True)
-        self.indicator_scroll.setMaximumHeight(225)
         self.indicator_host = QWidget()
         self.indicator_layout = QVBoxLayout(self.indicator_host)
         self.indicator_layout.setContentsMargins(0, 0, 0, 0)
         self.indicator_layout.setSpacing(2)
+        self.pane_splitter = SavedSplitter(Qt.Orientation.Vertical, service,
+                                           "indicator-panes/" + (local_key or "main"), self.indicator_host)
+        self.indicator_layout.addWidget(self.pane_splitter)
         self.indicator_scroll.setWidget(self.indicator_host)
-        root.addWidget(self.indicator_scroll)
+        self.plot_splitter.addWidget(self.indicator_scroll)
+        self.plot_splitter.restore([500, 200])
         self.derivative_scroll = QScrollArea()
         self.derivative_scroll.setWidgetResizable(True)
         self.derivative_scroll.setMaximumHeight(180)
@@ -306,15 +329,15 @@ class ChartPanel(QWidget):
             self.set_local_pair(self.instrument, bar)
 
     @property
-    def instrument(self):
+    def instrument(self) -> str:
         return self.local_pair[0] if self.local_pair else self.service.selected
 
     @property
-    def bar(self):
+    def bar(self) -> str:
         return self.local_pair[1] if self.local_pair else self.service.bar
 
     @property
-    def pair(self):
+    def pair(self) -> tuple[str, str]:
         return self.instrument, self.bar
 
     def select_symbol(self, instrument):
@@ -374,17 +397,20 @@ class ChartPanel(QWidget):
             self.rebuild_indicator_strips()
 
     def rebuild_indicator_strips(self):
-        while self.indicator_layout.count():
-            child = require(self.indicator_layout.takeAt(0)).widget()
-            if child is not None:
-                child.deleteLater()
+        for strip in self.indicator_strips:
+            strip.setParent(None)
+            strip.deleteLater()
         self.indicator_strips = []
         for setting in self.indicator_book.indicators:
-            if setting["visible"] and setting["kind"] not in ("MA", "EMA", "BOLL", "VWAP", "SUPERTREND"):
+            instance = instance_from_record(setting, self.service.indicator_catalog)
+            definition = self.service.indicator_catalog.resolve(instance.definition, instance.definition_revision)
+            if setting["visible"] and any(plot.target == "pane" for plot in definition.plots):
                 strip = IndicatorStrip(self.canvas, setting["id"], self.indicator_host)
-                self.indicator_layout.addWidget(strip)
+                self.pane_splitter.addWidget(strip)
                 self.indicator_strips.append(strip)
         self.indicator_scroll.setVisible(bool(self.indicator_strips))
+        if self.indicator_strips:
+            self.pane_splitter.restore([112] * len(self.indicator_strips))
 
     def local_indicators_changed(self):
         self.canvas.indicators_override = self.indicator_book.indicators

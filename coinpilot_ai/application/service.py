@@ -14,7 +14,14 @@ from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 from coinpilot_ai.market.client import MarketClient
 from coinpilot_ai.market.cache import MarketCache
 from coinpilot_ai.market.jobs import WorkQueue
-from coinpilot_ai.review.ai import AiClient, PromptLibrary, render_prompt
+from coinpilot_ai.review.ai import PromptLibrary, render_prompt
+from coinpilot_ai.ai.engine import AiChatService
+from coinpilot_ai.ai.legacy import LegacyAiAdapter
+from coinpilot_ai.ai.providers.base import ProviderConfig
+from coinpilot_ai.ai.providers.manager import ProviderManager
+from coinpilot_ai.ai.store import AiChatStore
+from coinpilot_ai.ai.tools.builtin import build_registry
+from coinpilot_ai.ai.transport import AiStreamTransport
 from coinpilot_ai.trading.alerts import AlertEngine, RuleState, validate_rule
 from coinpilot_ai.market.derivatives import DerivativeMonitor
 from coinpilot_ai.trading.models import instrument_id, number, aligned
@@ -27,6 +34,8 @@ from coinpilot_ai.core.store import Store, encode
 from coinpilot_ai.trading.service import TradingService
 from coinpilot_ai.integrations.transport import ApiError, JsonTransport
 from coinpilot_ai.charts.state import ChartBook
+from coinpilot_ai.indicators.catalog import IndicatorCatalog
+from coinpilot_ai.indicators.store import IndicatorLibrary
 from coinpilot_ai.market.intervals import BARS
 from coinpilot_ai.market.candles import ChartFeed
 
@@ -56,7 +65,10 @@ class CockpitService(QObject):
         self._market_cache_lock = Lock()
         self.io = WorkQueue(self)
         self.compute = WorkQueue(self, workers=2)
-        self.chart_book = ChartBook(self.store, self)
+        self.indicator_catalog = IndicatorCatalog()
+        self.indicator_library = IndicatorLibrary(self.store, self.indicator_catalog)
+        self.indicator_library.load()
+        self.chart_book = ChartBook(self.store, self, catalog=self.indicator_catalog, service=self)
         self.running = False
         # 凭据标识保持兼容；品牌更名不应要求用户重新录入现有密钥。
         namespace = "CryptoWidget/" + hashlib.sha256(str(Path(data_path).resolve()).encode()).hexdigest()[:16]
@@ -98,12 +110,13 @@ class CockpitService(QObject):
         self.last_spec_poll = 0
         self.last_derivative_poll = 0
         self.last_reconcile = 0
-        self.engine = AlertEngine()
+        self.engine = AlertEngine(catalog=self.indicator_catalog)
         self.transport = JsonTransport(self)
-        self.ai_transport = JsonTransport(self)
+        self.ai_transport = AiStreamTransport(self)
         self.transport.set_proxy(config)
         self.ai_transport.set_proxy(config)
-        self.ai = AiClient(self.ai_transport, self.vault)
+        self.ai_providers = ProviderManager(self.ai_transport, self.vault)
+        self.ai = LegacyAiAdapter(self.ai_providers)
         self.market = MarketClient(cache_dir, parent=self, source="okx")
         self.market.set_proxy(config)
         self.market.price_ready.connect(self._price)
@@ -112,6 +125,17 @@ class CockpitService(QObject):
         self.derivatives = DerivativeMonitor(self)
         self.derivatives.changed.connect(self._evaluate)
         self._configure_account()
+        self.ai_chat: AiChatService | None = None
+        self.ai_chat_error = ""
+        chat_store: AiChatStore | None = None
+        try:
+            chat_store = AiChatStore.from_main_path(self.store.path)
+            self.ai_chat = AiChatService(chat_store, self.ai_providers, self.scope, self.chat_provider,
+                                         build_registry(self), self)
+        except (ValueError, OSError, sqlite3.Error):
+            if chat_store is not None:
+                chat_store.close()
+            self.ai_chat_error = "聊天数据库无法打开，行情与交易仍可使用；请检查本地聊天数据"
         self.timer = QTimer(self)
         self.timer.setInterval(1000)
         self.timer.timeout.connect(self._tick)
@@ -398,6 +422,9 @@ class CockpitService(QObject):
             if not all(credentials.get(k, "").strip() for k in ("key", "secret", "passphrase")):
                 raise ValueError("API Key、Secret 和 Passphrase 都需要填写")
             self.vault.write("okx/" + environment, credentials)
+        if self.ai_chat is not None:
+            self.ai_chat.scope_changing()
+        self.ai.cancel_all()
         self.generation += 1
         self.chart_feed.reset()
         self.derivatives.reset()
@@ -418,6 +445,8 @@ class CockpitService(QObject):
         self.account_error = "账户重新连接中"
         self.engine.invalidate()
         self._configure_account()
+        if self.ai_chat is not None:
+            self.ai_chat.set_scope(self.scope)
         self.last_history = 0
         self.save_settings()
         self.refresh_account()
@@ -430,6 +459,9 @@ class CockpitService(QObject):
         if {k: v for k, v in config.items() if k.startswith("proxy_")} == {k: v for k, v in self.config.items() if k.startswith("proxy_")}:
             return
         self.config = dict(config)
+        if self.ai_chat is not None:
+            self.ai_chat.cancel()
+        self.ai.cancel_all()
         self.transport.set_proxy(config)
         self.ai_transport.set_proxy(config)
         self.market.set_proxy(config)
@@ -450,7 +482,7 @@ class CockpitService(QObject):
         return self.store.list("rule", self.environment)
 
     def save_rule(self, rule, key=None):
-        rule = validate_rule(rule)
+        rule = validate_rule(rule, catalog=self.indicator_catalog)
         rule["version"] = 2
         key = key or uuid.uuid4().hex
         self.store.put("rule", key, rule, self.environment)
@@ -469,6 +501,9 @@ class CockpitService(QObject):
                 event = self.engine.evaluate(key, rule, self.quotes.get(inst), self.positions, fresh_candles,
                                              now, now - self.account.get("time", 0) <= 20, self.derivatives)
             except (ValueError, KeyError, ArithmeticError):
+                state = self.engine.states.get(key)
+                if state is not None:
+                    state.active = None
                 continue
             if event:
                 self.store.put("rule_state", key, asdict(self.engine.states[key]), self.scope)
@@ -646,6 +681,19 @@ class CockpitService(QObject):
         mapping = self.settings.get("scenes", {}).get(scene, {})
         return self.store.get("ai_service", mapping.get("service", ""))
 
+    def chat_provider(self, provider_id: str) -> ProviderConfig | None:
+        key = provider_id or self.settings.get("chat_service", "")
+        record = self.store.get("ai_service", key) if key else None
+        if not key:
+            records = self.store.list("ai_service", limit=1)
+            record = records[0][1] if records else None
+        if record is None:
+            return None
+        parsed = ProviderConfig.from_record(record)
+        if key and parsed.id != key:
+            raise ValueError("AI 服务记录标识不一致，请重新配置")
+        return parsed
+
     def scene_template(self, scene):
         mapping = self.settings.get("scenes", {}).get(scene, {})
         row = self.store.get("template", mapping.get("template", ""))
@@ -686,7 +734,7 @@ class CockpitService(QObject):
     def cancel_ai(self, task):
         entry = self.ai_tasks.get(task)
         if entry and entry["request"]:
-            self.ai_transport.cancel(entry["request"])
+            self.ai.cancel(entry["request"])
 
     def _run_auto_ai(self):
         if self.ai_queue and not self.ai_tasks:
@@ -738,6 +786,9 @@ class CockpitService(QObject):
         if self.closed:
             return
         self.closed = True
+        if self.ai_chat is not None:
+            self.ai_chat.close()
+        self.ai.close()
         self.timer.stop()
         self.history.cancel()
         self.trading.close()

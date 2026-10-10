@@ -4,11 +4,15 @@ from decimal import Decimal, ROUND_FLOOR
 from coinpilot_ai.market.buffer import candle
 from coinpilot_ai.market.intervals import BARS, contiguous
 from coinpilot_ai.trading.models import number
-from coinpilot_ai.market.indicators import IndicatorStream, validate_spec
+from coinpilot_ai.market.indicators import IndicatorStream
+from coinpilot_ai.indicators.catalog import BUILTIN_CATALOG, IndicatorCatalog
+from coinpilot_ai.indicators.conditions import compare_values, validate_condition
+from coinpilot_ai.indicators.models import IndicatorCacheKey
+from coinpilot_ai.indicators.validation import runtime_instance
 from coinpilot_ai.trading.matching import execution_fee, execution_price, protective_exit
 
 
-def validate_strategy(strategy):
+def validate_strategy(strategy, *, catalog: IndicatorCatalog = BUILTIN_CATALOG):
     if strategy.get("bar") not in BARS or strategy.get("direction") not in ("long", "short"):
         raise ValueError("策略周期或方向无效")
     if not strategy.get("conditions"):
@@ -16,13 +20,7 @@ def validate_strategy(strategy):
     for condition in strategy["conditions"]:
         if condition.get("metric") != "indicator":
             raise ValueError("策略首版仅支持指标入场条件")
-        validate_spec(condition["indicator"])
-        if condition.get("op") not in ("above", "below", "cross_above", "cross_below"):
-            raise ValueError("指标比较方式无效")
-        if "compare" in condition:
-            validate_spec(condition["compare"]["indicator"])
-        else:
-            number(condition["threshold"])
+        validate_condition(condition, catalog)
     for field in ("stop_percent", "target_percent", "risk_percent"):
         if not 0 < number(strategy[field], field, positive=True) <= 100:
             raise ValueError(field + " 须在 0—100% 之间")
@@ -62,8 +60,9 @@ class CurveWindow:
         return [point for _, points in self.buckets for point in points]
 
 
-def run_backtest(rows, strategy, spec, *, initial="10000", fee_rate="0.0005", slippage_bps="0", cancelled=lambda: False):
-    validate_strategy(strategy)
+def run_backtest(rows, strategy, spec, *, initial="10000", fee_rate="0.0005", slippage_bps="0", cancelled=lambda: False,
+                 catalog: IndicatorCatalog = BUILTIN_CATALOG):
+    validate_strategy(strategy, catalog=catalog)
     if len(rows) < 2:
         raise ValueError("回测需要已收盘 K 线")
     def checked(row, previous=None):
@@ -86,10 +85,10 @@ def run_backtest(rows, strategy, spec, *, initial="10000", fee_rate="0.0005", sl
         raise ValueError("手续费率须在 0—1，滑点须低于 10000 基点")
     streams = {}
     def stream(spec):
-        normalized = validate_spec(spec)
-        key = normalized["kind"], tuple(sorted(normalized["params"].items()))
+        instance = runtime_instance(spec, catalog)
+        key = IndicatorCacheKey.of(instance, strategy["bar"])
         if key not in streams:
-            streams[key] = IndicatorStream(normalized, strategy["bar"])
+            streams[key] = IndicatorStream(instance, strategy["bar"], catalog=catalog)
             streams[key].push(first)
         return streams[key]
     signals = [(stream(c["indicator"]), stream(c["compare"]["indicator"]) if "compare" in c else None)
@@ -115,14 +114,13 @@ def run_backtest(rows, strategy, spec, *, initial="10000", fee_rate="0.0005", sl
             for condition, (left, right) in zip(strategy["conditions"], signals):
                 previous, current = pair_values(left, condition.get("line"))
                 rhs_previous, rhs_current = (pair_values(right, condition["compare"].get("line"))
-                    if right else (float(number(condition["threshold"])),)*2)
-                if current is None or rhs_current is None:
+                    if right else (None, None) if condition["op"] in ("is_true", "is_false")
+                    else (float(number(condition["threshold"])),)*2)
+                if current is None:
                     checks.append(False)
                     continue
                 op = condition["op"]
-                checks.append({"above": current >= rhs_current, "below": current <= rhs_current,
-                    "cross_above": previous is not None and rhs_previous is not None and previous <= rhs_previous and current > rhs_current,
-                    "cross_below": previous is not None and rhs_previous is not None and previous >= rhs_previous and current < rhs_current}[op])
+                checks.append(compare_values(op, previous, current, rhs_previous, rhs_current) is True)
             if all(checks):
                 entry = execution_price(opened, "buy" if direction > 0 else "sell", "market", slip)
                 stop_distance = entry * number(strategy["stop_percent"])/100

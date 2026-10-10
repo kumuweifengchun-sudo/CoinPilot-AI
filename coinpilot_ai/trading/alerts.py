@@ -5,7 +5,9 @@ from decimal import Decimal
 
 from .models import instrument_id, number
 from coinpilot_ai.market.intervals import BARS as BAR_SECONDS, contiguous, shift
-from coinpilot_ai.market.indicators import IndicatorRegistry, validate_spec
+from coinpilot_ai.market.indicators import IndicatorRegistry
+from coinpilot_ai.indicators.catalog import BUILTIN_CATALOG, IndicatorCatalog
+from coinpilot_ai.indicators.conditions import compare_values, validate_condition
 
 METRICS = {"price": "最新价格", "change_pct": "区间涨跌幅 (%)", "volume_ratio": "成交量倍数",
            "upl": "持仓未实现盈亏 (USDT)", "upl_pct": "持仓收益率 (%)",
@@ -20,7 +22,7 @@ def recent_close(stamp, bar, now):
     return -5 <= now-closed/1000 <= (next_close-closed)/1000+30
 
 
-def validate_rule(rule):
+def validate_rule(rule, *, catalog: IndicatorCatalog = BUILTIN_CATALOG):
     rule = dict(rule)
     rule["instrument"] = instrument_id(rule["instrument"])
     if not rule.get("name", "").strip():
@@ -48,16 +50,9 @@ def validate_rule(rule):
         raise ValueError("每条规则需要 1～8 个条件")
     for condition in rule["conditions"]:
         if condition.get("metric") == "indicator":
-            spec = validate_spec(condition.get("indicator"))
+            validate_condition(condition, catalog)
             if condition.get("bar", "15m") not in BARS:
                 raise ValueError("无效的指标周期")
-            if condition.get("op") not in ("above", "below", "cross_above", "cross_below"):
-                raise ValueError("无效的指标比较方式")
-            if "compare" in condition:
-                validate_spec(condition["compare"]["indicator"])
-            else:
-                number(condition["threshold"])
-            condition["indicator"] = spec
             continue
         if condition.get("metric") not in METRICS or condition.get("op") not in ("above", "below"):
             raise ValueError("无效的规则条件")
@@ -78,8 +73,8 @@ class RuleState:
 
 
 class AlertEngine:
-    def __init__(self, indicator_provider=None):
-        self.indicator_registry = IndicatorRegistry()
+    def __init__(self, indicator_provider=None, *, catalog: IndicatorCatalog = BUILTIN_CATALOG):
+        self.indicator_registry = IndicatorRegistry(catalog=catalog)
         self.indicator_provider = indicator_provider or self.indicator_registry.get
         self.states = {}
         self.history = {}
@@ -143,7 +138,7 @@ class AlertEngine:
                         or rhs[current] is None or rhs[previous] is None):
                     return None
                 return (values[previous], values[current], rhs[previous], rhs[current], str(result.times[current]))
-            threshold = float(number(condition["threshold"]))
+            threshold = None if condition["op"] in ("is_true", "is_false") else float(number(condition["threshold"]))
             return (values[previous], values[current], threshold, threshold, str(result.times[current]))
         if metric == "price":
             return number(quote["price"])
@@ -197,9 +192,11 @@ class AlertEngine:
             if condition["metric"] == "indicator":
                 left_previous, left, right_previous, right, stamp = value
                 op = condition["op"]
-                conditions.append({"above": left >= right, "below": left <= right,
-                                   "cross_above": left_previous <= right_previous and left > right,
-                                   "cross_below": left_previous >= right_previous and left < right}[op])
+                comparison = compare_values(op, left_previous, left, right_previous, right)
+                if comparison is None:
+                    state.active = None
+                    return None
+                conditions.append(comparison)
                 evidence.append(dict(condition, value=str(left), compared_to=str(right), candle=stamp))
             else:
                 threshold = number(condition["threshold"])

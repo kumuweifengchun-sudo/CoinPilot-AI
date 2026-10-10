@@ -214,7 +214,8 @@ class ReplayPage(QWidget):
                 self.service.chart_feed.indicator_cache.pop(self.series.pair, None)
                 self.series.deleteLater()
             self.session = ReplaySession(self.service.store, self.service.specs, inst, bar, rows,
-                                         session_id, fee=fee, slippage_bps=slippage)
+                                         session_id, fee=fee, slippage_bps=slippage,
+                                         catalog=self.service.indicator_catalog)
             self.series = ChartSeries((self.session.scope, bar),
                                       [e["period"] for e in self.service.chart_book.emas], self.service.chart_feed)
             self.series.changed.connect(self.series_ready)
@@ -374,7 +375,10 @@ class ReplayPage(QWidget):
                 child.deleteLater()
         self.indicator_strips = []
         for setting in self.service.chart_book.indicators:
-            if setting["visible"] and setting["kind"] not in ("MA", "EMA", "BOLL", "VWAP", "SUPERTREND"):
+            from coinpilot_ai.indicators.validation import instance_from_record
+            instance = instance_from_record(setting, self.service.indicator_catalog)
+            definition = self.service.indicator_catalog.resolve(instance.definition, instance.definition_revision)
+            if setting["visible"] and any(plot.target == "pane" for plot in definition.plots):
                 strip = IndicatorStrip(self.chart, setting["id"], self.indicator_host)
                 self.indicator_layout.addWidget(strip)
                 self.indicator_strips.append(strip)

@@ -2,6 +2,7 @@
 from copy import deepcopy
 from uuid import uuid4
 
+from coinpilot_ai.indicators.catalog import BUILTIN_CATALOG, IndicatorCatalog
 from coinpilot_ai.market.history import HistoryData
 from coinpilot_ai.market.intervals import BARS, shift
 from coinpilot_ai.trading.alerts import AlertEngine, RuleState
@@ -9,7 +10,7 @@ from coinpilot_ai.trading.paper import PaperBroker
 
 
 class ReplaySession:
-    def __init__(self, store, specs, instrument, bar, rows, session_id=None, *, fee="0.0005", slippage_bps="0"):
+    def __init__(self, store, specs, instrument, bar, rows, session_id=None, *, fee="0.0005", slippage_bps="0", catalog: IndicatorCatalog = BUILTIN_CATALOG):
         if bar not in BARS:
             raise ValueError("不支持的回放周期")
         if not isinstance(rows, HistoryData):
@@ -28,7 +29,7 @@ class ReplaySession:
         self.window = rows[max(0, self.cursor-5999):self.cursor+1]
         self.window_start = max(0, self.cursor-5999)
         self.pending_commands = saved.get("pending_commands", [])
-        self.alert_engine = AlertEngine()
+        self.alert_engine = AlertEngine(catalog=catalog)
         self.alert_engine.states = {key: RuleState(**state)
                                     for key, state in saved.get("alert_states", {}).items()}
         self.time = self.stamp(self.cursor, end=True)
@@ -99,8 +100,14 @@ class ReplaySession:
         for key, rule in rules:
             if rule.get("instrument") != self.instrument or rule.get("mode") == "order":
                 continue
-            event = self.alert_engine.evaluate(key, rule, quote, positions, candles, self.time,
-                                               account_fresh=True)
+            try:
+                event = self.alert_engine.evaluate(key, rule, quote, positions, candles, self.time,
+                                                   account_fresh=True)
+            except (ValueError, KeyError, ArithmeticError):
+                state = self.alert_engine.states.get(key)
+                if state is not None:
+                    state.active = None
+                continue
             if event:
                 event["source"] = "replay"
                 self.store.append("replay_alert", event, self.scope)

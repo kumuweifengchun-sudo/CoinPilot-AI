@@ -2,7 +2,7 @@
 from types import SimpleNamespace
 
 import pytest
-from PyQt6.QtWidgets import QDialog
+from PyQt6.QtWidgets import QDialog, QSpinBox
 
 from coinpilot_ai.charts.dialogs import DrawingDialog
 from coinpilot_ai.charts.settings import IndicatorEditDialog
@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import QWidget
 @pytest.mark.parametrize("kind,params", [
     ("EMA", {"period": 20}),
     ("BOLL", {"period": 20, "deviations": 2}),
+    ("DONCHIAN", {"period": 20}),
 ])
 def test_indicator_editor_creates_and_saves_period_and_width(app, kind, params):
     item = {"id": "test", "kind": kind, "params": params, "bar": "chart",
@@ -26,7 +27,9 @@ def test_indicator_editor_creates_and_saves_period_and_width(app, kind, params):
     dialog = IndicatorEditDialog(item)
     try:
         assert dialog.width() > 0
-        dialog.params["period"].setValue(30)
+        period = dialog.params["period"]
+        assert isinstance(period, QSpinBox)
+        period.setValue(30)
         dialog.line_width.setValue(2.5)
         dialog.bar.setCurrentIndex(dialog.bar.findData("1H"))
         dialog.save()

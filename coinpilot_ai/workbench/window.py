@@ -22,6 +22,8 @@ from .titlebar import WorkbenchTitleBar
 from coinpilot_ai.ui.icons import icon
 from coinpilot_ai.ui.theme import events, style_sheet
 from .watchlist import WatchlistDelegate
+from .ai_chat import AiChatPanel
+from .ai_context import WorkbenchAiContext
 
 
 class Workbench(QMainWindow):
@@ -56,14 +58,13 @@ class Workbench(QMainWindow):
         root.addLayout(body, 1)
         self.trade = TradeController(service, self)
         self.chart = ChartPanel(service, trading=True)
-        self.ai_placeholder = QLabel("AI 功能规划中")
-        self.ai_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.ai_placeholder.setMinimumSize(140, 100)
-        self.ai_placeholder.setObjectName("muted")
         market = self.make_market()
+        self.ai_context = WorkbenchAiContext(service, self.multi_chart, self)
+        self.ai_chat = AiChatPanel(service, self.ai_context.capture, chart_provider=self.ai_context.panel)
+        self.ai_chat.draft_ready.connect(self.load_ai_draft)
         self.make_information()
         self.workspace = WorkspaceLayout(self, service, {
-            "ai": ("AI", self.ai_placeholder), "market": ("盘面", market),
+            "ai": ("AI", self.ai_chat), "market": ("盘面", market),
             "info": ("账户与交易信息", self.trade.bottom), "order": ("委托下单", self.trade.sidebar)})
         self.workspace.profiles = WorkspaceProfiles(service, self.workspace, self.multi_chart, self.scanner_panel)
         self.title_bar.bind_workspace(self.workspace)
@@ -81,6 +82,7 @@ class Workbench(QMainWindow):
         for dock in self.workspace.docks.values():
             dock.visibilityChanged.connect(self.sync_visible)
         self.review = ReviewPage(service)
+        self.review.chat_requested.connect(self.discuss_review)
         self.review_tabs = QTabWidget()
         self.review_tabs.addTab(self.review, "交易复盘")
         self._replay = self._strategy_page = None
@@ -204,7 +206,12 @@ class Workbench(QMainWindow):
         self.event_detail.setPlaceholderText("选择事件查看触发事实")
         split = SavedSplitter(Qt.Orientation.Horizontal, self.service, "workspace_events")
         split.addWidget(self.events)
-        split.addWidget(self.event_detail)
+        detail_page = QWidget()
+        detail_layout = QVBoxLayout(detail_page)
+        detail_layout.setContentsMargins(0, 0, 0, 0)
+        detail_layout.addWidget(self.event_detail)
+        detail_layout.addWidget(button("问 AI · 固定此事件", self.discuss_event))
+        split.addWidget(detail_page)
         split.restore([500, 350])
         self.trade.tabs.addTab(split, "提醒事件")
         self.account_summary = QLabel("账户尚未连接")
@@ -292,6 +299,24 @@ class Workbench(QMainWindow):
             if event:
                 return dict(event["context"], events=[{k: v for k, v in event.items() if k not in ("context", "analysis")}])
         return self.service.context()
+
+    def load_ai_draft(self, draft: OrderDraft) -> None:
+        self.trade.load_draft(draft)
+        self.show_order_form()
+
+    def discuss_event(self) -> None:
+        if self.selected_event:
+            self.ai_chat.pin("event", self.selected_event, "提醒事件")
+            self.pages.setCurrentIndex(0)
+            self.workspace.set_visible("ai", True)
+            self.ai_chat.input.setPlainText("请解读固定的提醒事件，并说明需要进一步确认的信息。")
+
+    def discuss_review(self, kind: str, reference: str, label: str) -> None:
+        if kind in ("trade", "report"):
+            self.ai_chat.pin("trade" if kind == "trade" else "report", reference, label)
+            self.pages.setCurrentIndex(0)
+            self.workspace.set_visible("ai", True)
+            self.ai_chat.input.setPlainText("请继续讨论固定的交易或复盘报告，区分已知事实与分析。")
 
     def show_event(self):
         key = selected_id(self.events)

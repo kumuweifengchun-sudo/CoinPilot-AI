@@ -42,8 +42,8 @@
 
 ```powershell
 uv run --locked --group dev pytest -q
-.\tools\test_installer.ps1 -IsccPath "D:\Inno Setup 6\ISCC.exe"
-.\tools\build_installer.ps1 -IsccPath "D:\Inno Setup 6\ISCC.exe"
+.\scripts\release\test_installer.ps1 -IsccPath "D:\Inno Setup 6\ISCC.exe"
+.\scripts\release\build_installer.ps1 -IsccPath "D:\Inno Setup 6\ISCC.exe"
 uv run --locked python scripts/qa/smoke_test.py --exe "测试安装目录\coinpilot-ai.exe"
 ```
 

@@ -88,7 +88,7 @@ class CandleChart(ChartRenderer, QWidget):
         self.environment, self.instrument, self.bar = "demo", "BTC-USDT-SWAP", "15m"
         self.rows, self.values, self.times, self.ema_cache = [], [], [], []
         self.emas = deepcopy(self.book.emas if self.book else default_emas())
-        self.indicator_results = []
+        self.indicator_results: list[tuple[IndicatorSetting, IndicatorResult]] = []
         self.indicators_override: list[IndicatorSetting] | None = None
         self.view_key: str | None = None
         self.objects: list[Drawing] = []
@@ -106,7 +106,7 @@ class CandleChart(ChartRenderer, QWidget):
         self.draw_click_timer.setTimerType(Qt.TimerType.PreciseTimer)
         self.draw_click_timer.timeout.connect(self.finish_pending_draw)
         self.snap_target: tuple[float, float, str] | None = None
-        self.external_crosshair_time = None
+        self.external_crosshair_time: float | None = None
         self.magnet_enabled = self.book.magnet_enabled if self.book else True
         self.overlays = []
         self.account_stale = False
@@ -283,7 +283,7 @@ class CandleChart(ChartRenderer, QWidget):
         self.refresh_drawing_pointer()
         self.update()
 
-    def calculate_indicators(self):
+    def calculate_indicators(self) -> None:
         self.indicator_results = []
         if self.book and self.rows:
             for setting in (self.indicators_override if self.indicators_override is not None else self.book.indicators):
@@ -301,12 +301,13 @@ class CandleChart(ChartRenderer, QWidget):
                             result = (self.service.chart_feed.indicator(self._series, setting)
                                       if self.service and self._series is not None
                                       and self._series_revision == self._series.revision
-                                      else calculate(self.rows, setting, bar=self.bar))
+                                      else calculate(self.rows, setting, bar=self.bar,
+                                          catalog=self.book.catalog))
                         self.indicator_results.append((setting, result))
                     except (ValueError, TypeError, IndexError):
                         continue
 
-    def align_indicator(self, result, source_bar):
+    def align_indicator(self, result: IndicatorResult, source_bar: str) -> IndicatorResult:
         """跨周期只使用在目标 K 线时点已经确认的源 K 线。"""
         source_close = [shift(stamp, source_bar) for stamp in result.times]
         chart_times = tuple(int(row[0]) for row in self.rows)
@@ -324,8 +325,8 @@ class CandleChart(ChartRenderer, QWidget):
                 lines[name].append(values[usable] if usable >= 0 else None)
             confirmed.append(str(row[8]) == "1" and usable >= 0)
         return IndicatorResult(result.kind, chart_times,
-                               {name: tuple(values) for name, values in lines.items()}, tuple(confirmed))
-        self.update()
+                               {name: tuple(values) for name, values in lines.items()}, tuple(confirmed),
+                               result.definition_id, result.revision, result.metadata)
 
     @property
     def render_bar(self):

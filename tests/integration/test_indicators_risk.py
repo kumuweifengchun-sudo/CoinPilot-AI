@@ -17,7 +17,9 @@ def test_indicator_known_values_and_warmup():
     assert ma.lines["value"] == (None, None, 2, 3, 4)
     boll = calculate(rows, {"kind": "BOLL", "params": {"period": 3, "deviations": 2}})
     assert boll.lines["middle"][-1] == 4
-    assert boll.lines["upper"][-1] > 5 > boll.lines["lower"][-1]
+    upper, lower = boll.lines["upper"][-1], boll.lines["lower"][-1]
+    assert upper is not None and lower is not None
+    assert upper > 5 > lower
     rsi = calculate(candles(range(1, 20)), {"kind": "RSI", "params": {"period": 14}})
     assert rsi.lines["value"][13] is None
     assert rsi.lines["value"][14] == 100

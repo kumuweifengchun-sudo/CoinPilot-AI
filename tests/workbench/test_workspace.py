@@ -11,6 +11,7 @@ from coinpilot_ai.charts.panel import ChartPanel
 from coinpilot_ai.application.service import CockpitService
 from coinpilot_ai.review.ai_panel import AiPanel
 from coinpilot_ai.workbench.window import Workbench
+from coinpilot_ai.workbench.ai_chat import AiChatPanel
 
 
 class EmptyVault:
@@ -38,12 +39,13 @@ def workspace(app, tmp_path):
     app.processEvents()
 
 
-def test_single_chart_placeholder_and_default_geometry(workspace, app):
+def test_single_chart_chat_and_default_geometry(workspace, app):
     window, service = workspace
     docks = window.workspace.docks
     assert len(window.findChildren(ChartPanel)) == 1
     assert window.findChildren(AiPanel) == [window.review.ai_panel]
-    assert window.ai_placeholder.text() == 'AI 功能规划中'
+    assert window.findChildren(AiChatPanel) == [window.ai_chat]
+    assert window.ai_chat.chat is service.ai_chat
     assert window.pages.count() == 3
     assert docks['ai'].x() < docks['market'].x() < docks['order'].x()
     assert docks['info'].y() > docks['market'].y()
@@ -133,7 +135,9 @@ def test_six_chart_contexts_and_named_workspace_restore(workspace, app):
     assert grid.panel_count == 6
     assert grid.size().width() == grid.width()
     assert grid.panels[1].pair == ('ETH-USDT-SWAP', '1H')
-    assert grid.panels[1].indicator_book.indicators == [dict(indicator, bar="chart")]
+    from coinpilot_ai.charts.state import normalize_indicators
+    assert grid.panels[1].indicator_book.indicators == normalize_indicators([dict(indicator, bar="chart")])
+    assert service.store.get("chart_indicators", "pane1")["version"] == 2
     assert service.store.get('chart_pane_view', view_key)['count'] == 42
     assert window.scanner_panel.filters["rsi_max"].text() == "25"
 

@@ -1,5 +1,6 @@
 """命名工作区快照；保留旧版 main 布局记录。"""
 from copy import deepcopy
+from coinpilot_ai.indicators.validation import migrate_instances
 
 
 class WorkspaceProfiles:
@@ -26,7 +27,7 @@ class WorkspaceProfiles:
                     "watchlist": list(self.service.settings["watchlist"]),
                     "indicators": {"primary": deepcopy(self.service.chart_book.indicators),
                                    "panes": {key: deepcopy(value["items"]) for key, value in
-                                             self.service.store.list("chart_indicators") if value.get("version") == 1}},
+                                             self.service.store.list("chart_indicators") if value.get("version") in (1, 2)}},
                     "primary_view": self.service.chart_book.view(primary.environment, primary.instrument, primary.bar),
                     "pane_views": {key: value for key, value in self.service.store.list("chart_pane_view")}}
         if self.scanner is not None:
@@ -51,7 +52,7 @@ class WorkspaceProfiles:
         self.service.chart_book.save_indicators(primary_indicators)
         for key in (f"pane{index}" for index in range(1, 6)):
             items = deepcopy(indicator_data.get("panes", {}).get(key, primary_indicators))
-            self.service.store.put("chart_indicators", key, {"version": 1, "items": items})
+            self.service.store.put("chart_indicators", key, migrate_instances(items, self.service.indicator_catalog))
         for key, _ in self.service.store.list("chart_pane_view"):
             self.service.store.delete("chart_pane_view", key)
         for key, view in snapshot.get("pane_views", {}).items():
