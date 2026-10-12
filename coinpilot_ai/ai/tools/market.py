@@ -65,7 +65,7 @@ class MarketTools:
             ToolDefinition("get_candles", "读取最多 500 根已收盘 K 线，优先缓存，缺口通过共享历史链补齐", candle_schema, "market", self.candles),
             ToolDefinition("get_indicators", "计算目录中的内置或自定义指标，保留已收盘、预热和布尔输出状态", schema({
                 "instrument": INSTRUMENT, "bar": BAR, "limit": LIMIT, "end": END,
-                "kind": {"type": "string", "enum": ["MA", "EMA", "RSI", "ATR", "MACD", "BOLL", "DONCHIAN", "VWAP", "VOLUME_MA", "STOCHASTIC", "SUPERTREND"]},
+                "kind": {"type": "string", "enum": ["MA", "EMA", "RSI", "ATR", "DMI", "MACD", "BOLL", "DONCHIAN", "VWAP", "VOLUME_MA", "STOCHASTIC", "SUPERTREND"]},
                 "params": {"type": "object"},
                 "definition": {"type": "string", "maxLength": 80},
                 "definition_revision": {"type": "integer", "minimum": 1},

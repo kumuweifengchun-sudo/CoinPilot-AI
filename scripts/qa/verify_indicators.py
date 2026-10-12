@@ -83,7 +83,8 @@ def main() -> None:
         overlay_instance = IndicatorInstance("overlay", overlay.definition.id, 1)
         pane_instance = IndicatorInstance("pane", pane.definition.id, 1)
         service.chart_book.save_indicators([instance_record(overlay_instance), instance_record(pane_instance),
-            {"id": "rsi", "kind": "RSI"}, {"id": "atr", "kind": "ATR"}])
+            {"id": "rsi", "kind": "RSI"}, {"id": "atr", "kind": "ATR"},
+            instance_record(IndicatorInstance("dmi", "builtin.dmi", 1))])
         window = Workbench(service)
         window.resize(1440, 960)
         window.show()
@@ -95,7 +96,7 @@ def main() -> None:
             chart.canvas.calculate_indicators()
             chart.rebuild_indicator_strips()
             QTest.qWait(60)
-            assert len(chart.indicator_strips) == 3
+            assert len(chart.indicator_strips) == 4
             canvas_origin = chart.canvas.mapToGlobal(QPoint(0, 0)).x()
             main, _ = chart.canvas.plot_rects()
             for strip in chart.indicator_strips:
@@ -115,6 +116,22 @@ def main() -> None:
             assert expected is not None
             assert atr_strip.legend_values(atr_result, atr_plots) == [f"{expected:,.6g}"]
             assert chart.grab().save(str(output / "atr-crosshair.png"))
+            dmi_strip = next(strip for strip in chart.indicator_strips if strip.indicator_id == "dmi")
+            chart.indicator_scroll.ensureWidgetVisible(dmi_strip)
+            app.processEvents()
+            QTest.mouseMove(chart.canvas, QPoint(round(chart.canvas.time_x(chart.canvas.times[hovered])), round(main.center().y())))
+            dmi_result = next(result for setting, result in chart.canvas.indicator_results if setting["id"] == "dmi")
+            assert all(value != "—" for value in dmi_strip.legend_values(dmi_result, service.indicator_catalog.legacy("DMI").plots))
+            assert chart.grab().save(str(output / "dmi-crosshair.png"))
+            assert dmi_strip.grab().save(str(output / "dmi-pane.png"))
+            dmi_settings = IndicatorEditDialog(instance_record(IndicatorInstance("dmi", "builtin.dmi", 1)))
+            try:
+                dmi_settings.show()
+                app.processEvents()
+                assert dmi_settings.grab().save(str(output / "dmi-settings.png"))
+            finally:
+                dmi_settings.reject()
+                dmi_settings.deleteLater()
             colors = IndicatorEditDialog({"id": "colors", "kind": "MACD", "color": "#9394ee"})
             try:
                 colors.show()
@@ -143,7 +160,7 @@ def main() -> None:
             definitions = len(service.store.list("indicator_definition"))
             editor.add_to_chart()
             assert len(service.store.list("indicator_definition")) == definitions + 1
-            assert len(service.chart_book.indicators) == 5
+            assert len(service.chart_book.indicators) == 6
             editor.code.setPlainText('//@version=6\nindicator("Unsafe")\nplot(request.security("BTC", "1D", close))')
             editor.compile_preview()
             wait(app, lambda: editor.job is None)

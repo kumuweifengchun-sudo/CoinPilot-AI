@@ -41,7 +41,7 @@ def calculate(rows: Sequence[CandleInput], spec: object, *, bar: str | None = No
 
 class IndicatorState:
     """旧 State 接口复用统一运行时，保留尾部回退与滚出前缀行为。"""
-    RECURSIVE = {"EMA", "RSI", "MACD", "ATR", "SUPERTREND", "VWAP"}
+    RECURSIVE = {"EMA", "RSI", "MACD", "ATR", "DMI", "SUPERTREND", "VWAP"}
 
     def __init__(self, spec: object, *, bar: str | None = None,
                  catalog: IndicatorCatalog = BUILTIN_CATALOG) -> None:

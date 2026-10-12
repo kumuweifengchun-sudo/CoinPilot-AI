@@ -109,6 +109,18 @@ def _reference(rows, spec, *, bar=None):
         lower = [min(lows[i-period+1:i+1]) if i+1 >= period else None for i in range(len(rows))]
         lines = {"upper": upper, "middle": [(high+low)/2 if high is not None and low is not None else None
                                            for high, low in zip(upper, lower)], "lower": lower}
+    elif kind == "DMI":
+        up = [highs[i]-highs[i-1] for i in range(1, len(rows))]
+        down = [lows[i-1]-lows[i] for i in range(1, len(rows))]
+        first = [None] if rows else []
+        positive = _wilder(first + [u if u > d and u > 0 else 0. for u, d in zip(up, down)], params["period"])
+        negative = _wilder(first + [d if d > u and d > 0 else 0. for u, d in zip(up, down)], params["period"])
+        ranges = _wilder(first + [max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1]))
+                                 for i in range(1, len(rows))], params["period"])
+        plus = [None if p is None or tr is None else 100*p/tr if tr else 0. for p, tr in zip(positive, ranges)]
+        minus = [None if m is None or tr is None else 100*m/tr if tr else 0. for m, tr in zip(negative, ranges)]
+        dx = [None if p is None or m is None else 100*abs(p-m)/(p+m) if p+m else 0. for p, m in zip(plus, minus)]
+        lines = {"plus_di": plus, "minus_di": minus, "adx": _wilder(dx, params["adx_period"])}
     elif kind in ("ATR", "SUPERTREND"):
         ranges = [highs[0]-lows[0]] if rows else []
         ranges += [max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1]))
@@ -167,7 +179,7 @@ class _BuiltinState:
     普通追加/末根修正不复制历史结果；递归状态保留末根之前的检查点。
     更早修正、参数或历史结构变化时重建；有限窗口使用可回退的滚动统计。
     """
-    RECURSIVE = {"EMA", "RSI", "MACD", "ATR", "SUPERTREND", "VWAP"}
+    RECURSIVE = {"EMA", "RSI", "MACD", "ATR", "DMI", "SUPERTREND", "VWAP"}
 
     def __init__(self, spec, *, bar=None):
         self.spec = validate_spec(spec)
@@ -199,6 +211,26 @@ class _BuiltinState:
         self.state[name] = (count, total, previous)
         return previous if count >= period else None
 
+    def _dmi(self, high: float, low: float, previous_close: float | None,
+             period: int, adx_period: int) -> dict[str, float | None]:
+        previous = self.state.get("dmi_previous")
+        self.state["dmi_previous"] = (high, low)
+        # 第一根缺少方向变化，不参与 Wilder 种子；缺口重建会清空该检查点。
+        if previous is None or previous_close is None:
+            return {"plus_di": None, "minus_di": None, "adx": None}
+        up, down = high-previous[0], previous[1]-low
+        positive = self._average("dmi_positive", up if up > down and up > 0 else 0., period, wilder=True)
+        negative = self._average("dmi_negative", down if down > up and down > 0 else 0., period, wilder=True)
+        tr = max(high-low, abs(high-previous_close), abs(low-previous_close))
+        average_range = self._average("dmi_range", tr, period, wilder=True)
+        if positive is None or negative is None or average_range is None:
+            return {"plus_di": None, "minus_di": None, "adx": None}
+        plus = 100*positive/average_range if average_range else 0.
+        minus = 100*negative/average_range if average_range else 0.
+        dx = 100*abs(plus-minus)/(plus+minus) if plus+minus else 0.
+        return {"plus_di": plus, "minus_di": minus,
+                "adx": self._average("dmi_adx", dx, adx_period, wilder=True)}
+
     def _next(self, row):
         stamp = int(row[0])
         high, low, close, volume = (float(row[i]) for i in (2, 3, 4, 5))
@@ -225,6 +257,8 @@ class _BuiltinState:
             signal = self._average("signal", macd, p["signal"])
             values = {"macd": macd, "signal": signal,
                       "histogram": macd-signal if macd is not None and signal is not None else None}
+        elif kind == "DMI":
+            values = self._dmi(high, low, previous_close, int(p["period"]), int(p["adx_period"]))
         elif kind in ("ATR", "SUPERTREND"):
             tr = high-low if previous_close is None else max(high-low, abs(high-previous_close), abs(low-previous_close))
             atr = self._average("atr", tr, p["period"], wilder=True)

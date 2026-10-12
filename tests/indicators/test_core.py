@@ -19,7 +19,7 @@ def rows(count: int) -> CandleBuffer:
 
 
 def test_catalog_versions_are_immutable_and_inputs_describe_all_builtins() -> None:
-    assert len(BUILTIN_CATALOG.list()) == 11
+    assert len(BUILTIN_CATALOG.list()) == 12
     catalog = IndicatorCatalog()
     definition = catalog.get("builtin.ema")
     assert definition.inputs[0].default == 20
