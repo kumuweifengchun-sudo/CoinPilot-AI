@@ -3,8 +3,9 @@ import sys
 
 import pytest
 from PyQt6.QtCore import QPoint, Qt
+from PyQt6.QtGui import QAction
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QCheckBox, QDockWidget, QLabel, QMenuBar, QStyle, QStyleOptionComboBox
+from PyQt6.QtWidgets import QApplication, QCheckBox, QDialog, QDockWidget, QLabel, QMenu, QMenuBar, QStyle, QStyleOptionComboBox
 
 from coinpilot_ai.core.config import DEFAULT_CONFIG
 from coinpilot_ai.charts.panel import ChartPanel
@@ -12,6 +13,7 @@ from coinpilot_ai.application.service import CockpitService
 from coinpilot_ai.review.ai_panel import AiPanel
 from coinpilot_ai.workbench.window import Workbench
 from coinpilot_ai.workbench.ai_chat import AiChatPanel
+from coinpilot_ai.ui.qt import require
 
 
 class EmptyVault:
@@ -518,15 +520,95 @@ def test_close_single_panel_actions_and_coalesced_save(workspace, app, monkeypat
     assert not layout.desired['order'] and not layout.actions['order'].isChecked()
     layout.actions['order'].trigger()
     assert layout.docks['order'].isVisible()
-    for index, visible in ((0, [True, True, False, False]), (1, [False, False, True, False]),
-                           (3, [False, False, False, True]), (5, [False]*4)):
+    for index, visible in ((0, [False, False]), (1, [True, False]),
+                           (3, [False, True]), (5, [False, False])):
         window.trade.tabs.setCurrentIndex(index)
         assert [b.isVisible() for b in window.trade.action_buttons] == visible
+        assert window.trade.account_actions.isVisible() == any(visible)
     layout.set_visible('order', False)
     window.trade.tabs.setCurrentIndex(1)
     window.trade.cancel_order()
     assert window.trade.operation_feedback.isVisible()
     assert '选择要撤销' in window.trade.operation_feedback.text()
+
+
+def _menu_positions(window: Workbench, service: CockpitService) -> None:
+    service.positions = [
+        {'posId': 'first', 'instId': 'BTC-USDT-SWAP', 'posSide': 'long',
+         'pos': '1', 'availPos': '1', 'mgnMode': 'cross'},
+        {'posId': 'second', 'instId': 'ETH-USDT-SWAP', 'posSide': 'short',
+         'pos': '3', 'availPos': '2', 'mgnMode': 'isolated'},
+    ]
+    window.trade.refresh('account')
+
+
+@pytest.mark.parametrize('operation', ['close', 'protect'])
+def test_position_menu_targets_clicked_row_without_submitting(
+        workspace: tuple[Workbench, CockpitService], monkeypatch: pytest.MonkeyPatch,
+        operation: str) -> None:
+    window, service = workspace
+    trade = window.trade
+    _menu_positions(window, service)
+    trade.position_table.selectRow(0)
+    point = trade.position_table.visualItemRect(require(trade.position_table.item(1, 0))).center()
+    monkeypatch.setattr(service.trading, 'submit', lambda *args, **kwargs: pytest.fail('菜单不能直接提交订单'))
+    monkeypatch.setattr(service, 'trade_action', lambda *args, **kwargs: pytest.fail('未确认不能提交保护单'))
+
+    def choose(menu: QMenu, pos: QPoint, action: QAction | None = None) -> QAction | None:
+        assert [a.text() for a in menu.actions()] == ['载入平仓草稿…', '设置止盈止损…']
+        # 模拟菜单打开期间行情刷新并重排行，操作仍须绑定原先右键的持仓。
+        service.positions.reverse()
+        trade.refresh('account')
+        return menu.actions()[0 if operation == 'close' else 1]
+
+    dialogs: list[str] = []
+
+    def reject(dialog: QDialog) -> int:
+        dialogs.append(dialog.windowTitle())
+        assert trade.selected_position()['posId'] == 'second'
+        return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(QMenu, 'exec', choose)
+    monkeypatch.setattr(QDialog, 'exec', reject)
+    trade.position_menu(point)
+    assert trade.selected_position()['posId'] == 'second'
+    if operation == 'close':
+        draft = trade.draft()
+        assert (draft.instrument, draft.action, draft.direction, draft.size, draft.margin) == (
+            'ETH-USDT-SWAP', 'close', 'short', '2', 'isolated')
+        assert not dialogs
+    else:
+        assert len(dialogs) == 1 and '设置止盈止损' in dialogs[0]
+
+
+@pytest.mark.parametrize('change', ['account', 'removed', 'dismissed', 'blank'])
+def test_position_menu_rejects_stale_or_empty_target(
+        workspace: tuple[Workbench, CockpitService], monkeypatch: pytest.MonkeyPatch,
+        change: str) -> None:
+    window, service = workspace
+    trade = window.trade
+    _menu_positions(window, service)
+    point = trade.position_table.visualItemRect(require(trade.position_table.item(0, 0))).center()
+    monkeypatch.setattr(trade, 'load_position', lambda: pytest.fail('无效菜单目标不能载入草稿'))
+    monkeypatch.setattr(trade, 'protect_position', lambda: pytest.fail('无效菜单目标不能打开保护单'))
+
+    def choose(menu: QMenu, pos: QPoint, action: QAction | None = None) -> QAction | None:
+        assert change != 'blank', '空白区域不应打开持仓操作菜单'
+        if change == 'account':
+            service.generation += 1
+        elif change == 'removed':
+            service.positions.clear()
+            trade.refresh('account')
+        elif change == 'dismissed':
+            return None
+        return menu.actions()[0]
+
+    monkeypatch.setattr(QMenu, 'exec', choose)
+    trade.position_menu(QPoint(10, -1) if change == 'blank' else point)
+    if change == 'account':
+        assert '账户已切换' in trade.operation_feedback.text()
+    elif change == 'removed':
+        assert '已更新或移除' in trade.operation_feedback.text()
 
 
 @pytest.mark.parametrize('record', [None, {'version': 99}, {'version': 1, 'state': 'not base64'},

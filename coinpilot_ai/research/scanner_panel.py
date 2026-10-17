@@ -8,6 +8,7 @@ from .scanner import MarketScanner, TEMPLATES
 from coinpilot_ai.ui.common import button, fill_table, selected_id, table
 from coinpilot_ai.indicators.conditions import spec_title, validate_condition
 from coinpilot_ai.trading.dialogs import IndicatorConditionDialog
+from coinpilot_ai.ui.theme import SPACING_SM
 
 
 class ScannerPanel(QWidget):
@@ -16,7 +17,7 @@ class ScannerPanel(QWidget):
         self.service = service
         self.scanner = MarketScanner(service, self)
         root = QVBoxLayout(self)
-        root.setContentsMargins(3, 3, 3, 3)
+        root.setContentsMargins(SPACING_SM, SPACING_SM, SPACING_SM, SPACING_SM)
         self.templates = QComboBox()
         self.templates.currentIndexChanged.connect(self.load_template)
         root.addWidget(self.templates)

@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import QCheckBox, QComboBox, QGridLayout, QHBoxLayout, QLab
 from .panel import ChartPanel
 from coinpilot_ai.market.lod import MAX_VIEW_BARS
 from coinpilot_ai.market.intervals import BARS
+from coinpilot_ai.ui.theme import SPACING_SM, SPACING_XS
 
 
 class MultiChart(QWidget):
@@ -21,8 +22,9 @@ class MultiChart(QWidget):
         record = service.store.get("chart_grid", "main", {})
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(2)
+        root.setSpacing(SPACING_SM)
         toolbar = QHBoxLayout()
+        toolbar.setSpacing(SPACING_XS)
         toolbar.addWidget(QLabel("图表"))
         self.layout_choice = QComboBox()
         for size in self.SHAPES:
@@ -41,7 +43,7 @@ class MultiChart(QWidget):
         self.grid_host = QWidget()
         self.grid = QGridLayout(self.grid_host)
         self.grid.setContentsMargins(0, 0, 0, 0)
-        self.grid.setSpacing(3)
+        self.grid.setSpacing(SPACING_SM)
         root.addWidget(self.grid_host, 1)
         self.saved_pairs = record.get("pairs", [])
         primary.canvas.view_changed.connect(lambda: self.sync_view(primary))

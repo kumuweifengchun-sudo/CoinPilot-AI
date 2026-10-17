@@ -18,7 +18,7 @@ from coinpilot_ai.ui.qt import require
 def capture(output):
     from PyQt6.QtCore import Qt
     from PyQt6.QtTest import QTest
-    from PyQt6.QtGui import QFontInfo, QFontMetricsF
+    from PyQt6.QtGui import QFontDatabase, QFontInfo, QFontMetricsF
     from PyQt6.QtWidgets import QLabel
     from coinpilot_ai.application.bootstrap import create_application
     from coinpilot_ai.core.config import DEFAULT_CONFIG, SettingsStore
@@ -28,6 +28,10 @@ def capture(output):
     from coinpilot_ai.desktop.visuals import price_text_width
 
     app = create_application([])
+    if os.environ.get("QT_QPA_PLATFORM") == "offscreen" and sys.platform == "win32":
+        # 离屏插件不会枚举 Windows 中文字体，显式加载，避免方框文字掩盖布局问题。
+        for name in ("msyh.ttc", "msyhbd.ttc", "segoeui.ttf", "seguisb.ttf"):
+            QFontDatabase.addApplicationFont(str(Path(os.environ["SystemRoot"]) / "Fonts" / name))
     output.mkdir(parents=True, exist_ok=True)
     scale = os.environ.get("COINPILOT_AI_QA_SCALE", "1")
     with tempfile.TemporaryDirectory(prefix="coinpilot-ai-qa-") as directory:

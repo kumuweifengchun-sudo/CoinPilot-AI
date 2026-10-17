@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QT
 from coinpilot_ai.ai.models import JsonValue
 from coinpilot_ai.trading.models import OrderDraft
 from coinpilot_ai.ui.qt import application, require
+from coinpilot_ai.ui.theme import SPACING_SM, SPACING_XS
 
 
 class _MessageBrowser(QTextBrowser):
@@ -26,7 +27,7 @@ class AiMessageCell(QWidget):
         self.message_text = text
         self.render_count = 0
         root = QVBoxLayout(self)
-        root.setContentsMargins(8, 6, 8, 6)
+        root.setContentsMargins(SPACING_SM, SPACING_SM, SPACING_SM, SPACING_SM)
         row = QHBoxLayout()
         title = QLabel("你" if user else "CoinPilot AI")
         title.setObjectName("sectionTitle")
@@ -82,7 +83,7 @@ class AiToolCard(QWidget):
         super().__init__(parent)
         self.tool_name = name
         self.root = QVBoxLayout(self)
-        self.root.setContentsMargins(8, 3, 8, 3)
+        self.root.setContentsMargins(SPACING_SM, SPACING_XS, SPACING_SM, SPACING_XS)
         self.toggle = QPushButton("▸ " + TOOL_TITLES.get(name, name) + " · 执行中")
         self.toggle.setCheckable(True)
         self.toggle.toggled.connect(self.expand)
@@ -127,7 +128,7 @@ class AiOrderDraftCard(QWidget):
         super().__init__(parent)
         self.draft = draft
         root = QVBoxLayout(self)
-        root.setContentsMargins(8, 6, 8, 6)
+        root.setContentsMargins(SPACING_SM, SPACING_SM, SPACING_SM, SPACING_SM)
         detail = QLabel(f"{draft.instrument} · {'做多' if draft.direction == 'long' else '做空'}\n"
                        f"入场：{draft.price or '市场价／待校验'}\n数量：{draft.size or '待补全'} 张\n"
                        f"止损：{draft.stop_loss or '待补全'}\n止盈：{draft.take_profit or '待补全'}\n"

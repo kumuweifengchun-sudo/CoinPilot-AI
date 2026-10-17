@@ -14,7 +14,7 @@ from coinpilot_ai.core.config import DEFAULT_CONFIG, PROXY_LABELS, SOURCE_LABELS
 from coinpilot_ai.desktop.visuals import Quote, draw_ticker, ticker_size
 from coinpilot_ai.ui.typography import font, render_hints
 from coinpilot_ai.ui.icons import icon, set_button_icon
-from coinpilot_ai.ui.theme import THEME_LABELS, color, events, style_sheet
+from coinpilot_ai.ui.theme import SPACING_MD, SPACING_SM, SPACING_XS, THEME_LABELS, color, events, style_sheet
 
 
 class Preview(QWidget):
@@ -76,8 +76,8 @@ class SettingsDialog(QDialog):
         frame = QFrame()
         frame.setObjectName("card")
         body = QVBoxLayout(frame)
-        body.setContentsMargins(12, 8, 12, 8)
-        body.setSpacing(6)
+        body.setContentsMargins(SPACING_SM, SPACING_SM, SPACING_SM, SPACING_SM)
+        body.setSpacing(SPACING_SM)
         label = QLabel(title)
         label.setObjectName("sectionTitle")
         heading = QHBoxLayout()
@@ -108,14 +108,15 @@ class SettingsDialog(QDialog):
         content = QWidget()
         content.setObjectName("content")
         body = QVBoxLayout(content)
-        body.setContentsMargins(12, 10, 12, 10)
-        body.setSpacing(10)
+        margin = SPACING_SM if self.embedded else SPACING_MD
+        body.setContentsMargins(margin, margin, margin, margin)
+        body.setSpacing(SPACING_SM)
         self.scroll_area.setWidget(content)
         root.addWidget(self.scroll_area, 1)
 
         header = QHBoxLayout()
         titles = QVBoxLayout()
-        titles.setSpacing(3)
+        titles.setSpacing(SPACING_XS)
         title = QLabel("偏好设置")
         title.setObjectName("pageTitle")
         subtitle = QLabel("自定义你的桌面行情空间")
@@ -137,8 +138,8 @@ class SettingsDialog(QDialog):
         self.source_combo.setToolTip("均为永续合约报价；自动模式按 Binance、OKX、Bybit 顺序尝试")
         coins = self._card(body, "币种与数据源", toggle=self.source_combo)
         grid = QGridLayout()
-        grid.setHorizontalSpacing(6)
-        grid.setVerticalSpacing(5)
+        grid.setHorizontalSpacing(SPACING_SM)
+        grid.setVerticalSpacing(SPACING_SM)
         for column, text in enumerate(("序号", "交易对", "小数位")):
             label = QLabel(text)
             label.setObjectName("muted")
@@ -203,7 +204,7 @@ class SettingsDialog(QDialog):
         behavior = self._card(body, "常规设置")
         toggles = QHBoxLayout()
         toggles.addWidget(self.startup_check)
-        toggles.addSpacing(12)
+        toggles.addSpacing(SPACING_SM)
         toggles.addWidget(self.cycle_check)
         toggles.addStretch()
         behavior.addLayout(toggles)
@@ -269,14 +270,14 @@ class SettingsDialog(QDialog):
         footer = QWidget()
         footer.setObjectName("footer")
         footer_layout = QVBoxLayout(footer)
-        footer_layout.setContentsMargins(12, 10, 12, 12)
+        footer_layout.setContentsMargins(margin, SPACING_SM, margin, margin)
         self.feedback = QLabel("")
         self.feedback.setObjectName("feedback")
         self.feedback.setWordWrap(True)
         self.feedback.hide()
         footer_layout.addWidget(self.feedback)
         buttons = QHBoxLayout()
-        buttons.setSpacing(8)
+        buttons.setSpacing(SPACING_SM)
         self.refresh_button = QPushButton("重新加载图标")
         set_button_icon(self.refresh_button, "refresh-cw", size=14)
         self.refresh_button.setObjectName("quiet")
@@ -473,7 +474,7 @@ class SettingsDialog(QDialog):
             QLabel#pageTitle { color: %(text)s; font-size: 19px; font-weight: 600; }
             QLabel#brandBadge { color: %(text)s; font-size: 9px; font-weight: 600;
                 border: 1px solid %(border_strong)s; border-radius: 5px;
-                background: %(surface_raised)s; padding: 5px 7px; }
+                background: %(surface_raised)s; padding: 4px 8px; }
             QLabel#sectionAccent { background: %(accent)s; border-radius: 1px; }
             QLabel#sectionTitle { font-size: 12px; font-weight: 600; color: %(text)s; }
             QLabel#muted { color: %(text_muted)s; font-size: 10px; }

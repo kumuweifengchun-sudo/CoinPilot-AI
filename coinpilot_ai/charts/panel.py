@@ -23,7 +23,7 @@ from coinpilot_ai.indicators.validation import instance_from_record, instance_re
 from coinpilot_ai.charts.position import POSITION_TOOLS, position_metrics, position_summary
 from coinpilot_ai.trading.models import instrument_id
 from coinpilot_ai.ui.icons import icon, set_button_icon
-from coinpilot_ai.ui.theme import chart_controls_style, events
+from coinpilot_ai.ui.theme import SPACING_SM, SPACING_XS, chart_controls_style, events
 
 if TYPE_CHECKING:
     from coinpilot_ai.application.service import CockpitService
@@ -33,7 +33,6 @@ class SavedSplitter(QSplitter):
     def __init__(self, orientation, service, name, parent=None):
         super().__init__(orientation, parent)
         self.service, self.name = service, name
-        self.setHandleWidth(4)
         self.splitterMoved.connect(self.save)
 
     def restore(self, sizes):
@@ -101,15 +100,15 @@ class ChartPanel(QWidget):
         self.range_timer.timeout.connect(self.ensure_view)
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(2)
+        root.setSpacing(SPACING_SM)
         selectors = QHBoxLayout()
-        selectors.setSpacing(6)
+        selectors.setSpacing(SPACING_XS)
         self.symbol_choice = InstrumentSelector(service, self.instrument, self)
         self.symbol_choice.instrument_selected.connect(self.select_symbol)
         selectors.addWidget(self.symbol_choice)
         root.addLayout(selectors)
         controls = QHBoxLayout()
-        controls.setSpacing(2)
+        controls.setSpacing(SPACING_XS)
         self.period_buttons = {}
         for bar in QUICK_BARS:
             btn = self.small_button(bar, lambda _, b=bar: self.select_bar(b))
@@ -175,11 +174,12 @@ class ChartPanel(QWidget):
         self.compact_hidden.append(self.max_button)
         root.addLayout(controls)
         row = QHBoxLayout()
-        row.setSpacing(0)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(SPACING_XS)
         toolbar = QWidget()
         tools = QVBoxLayout(toolbar)
-        tools.setContentsMargins(2, 2, 3, 2)
-        tools.setSpacing(1)
+        tools.setContentsMargins(SPACING_XS, 0, SPACING_XS, 0)
+        tools.setSpacing(SPACING_XS)
         self.group = QButtonGroup(self)
         self.group.setExclusive(True)
         self.tool_buttons = {}
@@ -201,7 +201,7 @@ class ChartPanel(QWidget):
         self.magnet_button.setFixedSize(32, 27)
         set_button_icon(self.magnet_button, "magnet", size=18)
         self.magnet_button.toggled.connect(lambda enabled: self.canvas.set_magnet(enabled))
-        tools.addSpacing(5)
+        tools.addSpacing(SPACING_XS)
         tools.addWidget(self.magnet_button)
         for name, tip, callback in (("undo-2", "撤销 Ctrl+Z", lambda: self.undo(False)), ("redo-2", "重做 Ctrl+Shift+Z", lambda: self.undo(True))):
             btn = QToolButton()
@@ -252,7 +252,7 @@ class ChartPanel(QWidget):
         self.indicator_host = QWidget()
         self.indicator_layout = QVBoxLayout(self.indicator_host)
         self.indicator_layout.setContentsMargins(0, 0, 0, 0)
-        self.indicator_layout.setSpacing(2)
+        self.indicator_layout.setSpacing(SPACING_SM)
         self.pane_splitter = SavedSplitter(Qt.Orientation.Vertical, service,
                                            "indicator-panes/" + (local_key or "main"), self.indicator_host)
         self.indicator_layout.addWidget(self.pane_splitter)
@@ -265,7 +265,7 @@ class ChartPanel(QWidget):
         self.derivative_host = QWidget()
         derivative_layout = QVBoxLayout(self.derivative_host)
         derivative_layout.setContentsMargins(0, 0, 0, 0)
-        derivative_layout.setSpacing(1)
+        derivative_layout.setSpacing(SPACING_SM)
         self.derivative_strips = [DerivativeStrip(self, kind, self.derivative_host)
                                   for kind in ("funding", "oi", "mark", "index", "basis")]
         for strip in self.derivative_strips:
@@ -277,7 +277,7 @@ class ChartPanel(QWidget):
         self.rebuild_indicator_strips()
         self.canvas.view_changed.connect(self.update_indicator_strips)
         bottom = QHBoxLayout()
-        bottom.setSpacing(3)
+        bottom.setSpacing(SPACING_XS)
         self.status = QLabel()
         self.status.setObjectName("muted")
         self.status.setMinimumWidth(0)

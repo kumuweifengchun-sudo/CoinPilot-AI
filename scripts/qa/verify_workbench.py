@@ -18,6 +18,8 @@ from coinpilot_ai.ui.qt import require
 
 from PyQt6.QtTest import QTest
 from PyQt6.QtGui import QFontDatabase
+from PyQt6.QtCore import QTimer
+from PyQt6.QtWidgets import QApplication, QMenu
 from coinpilot_ai.application.bootstrap import create_application
 from coinpilot_ai.core.config import DEFAULT_CONFIG, SettingsStore
 from coinpilot_ai.desktop.widget import CoinPilotWidget
@@ -140,6 +142,24 @@ def main():
             QTest.qWait(80)
             app.processEvents()
             window.grab().save(str(output / (name + ".png")))
+            if index == 1:
+                window.review.detail_tabs.setCurrentIndex(1)
+                app.processEvents()
+                window.grab().save(str(output / "review-history.png"))
+                window.review.detail_tabs.setCurrentIndex(0)
+            if index == 0:
+                # 只打开并关闭持仓右键菜单，不选择交易操作。
+                def capture_position_menu() -> None:
+                    popup = QApplication.activePopupWidget()
+                    if isinstance(popup, QMenu):
+                        popup.grab().save(str(output / "position-menu.png"))
+                        popup.close()
+
+                positions = window.trade.position_table
+                position = positions.visualItemRect(require(positions.item(0, 0))).center()
+                QTimer.singleShot(0, capture_position_menu)
+                positions.customContextMenuRequested.emit(position)
+                assert (output / "position-menu.png").exists(), "持仓操作菜单应可打开"
         for section in window.settings_page.section_indices:
             window.open_settings(section)
             app.processEvents()

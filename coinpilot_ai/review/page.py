@@ -2,10 +2,13 @@
 import time
 
 from PyQt6.QtCore import QDateTime, Qt, pyqtSignal
-from PyQt6.QtWidgets import (QAbstractItemView, QDateTimeEdit, QHBoxLayout, QLabel,
-    QLineEdit, QListWidget, QListWidgetItem, QSplitter, QTabWidget, QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QAbstractItemView, QDateTimeEdit, QFrame, QGridLayout, QHBoxLayout, QLabel,
+    QLineEdit, QListWidget, QListWidgetItem, QMenu, QScrollArea, QSizePolicy, QSplitter, QStackedWidget,
+    QTabWidget, QToolButton, QVBoxLayout, QWidget)
 
 from coinpilot_ai.ui.qt import require
+from coinpilot_ai.ui.theme import SPACING_SM, SPACING_XS
+from coinpilot_ai.charts.panel import SavedSplitter
 from coinpilot_ai.core.store import encode
 from coinpilot_ai.ui.common import button, combo, confirm, fill_table, select_data, selected_id, show_text, table, timestamp
 from coinpilot_ai.trading.models import number
@@ -15,7 +18,7 @@ from .equity_curve import EquityCurve
 from .snapshot_widgets import SnapshotGallery
 from .ai_panel import AiPanel
 from .panel import edit_journal_note
-from .statistics import statistics, grouped_statistics
+from .statistics import Statistics, statistics, grouped_statistics
 
 
 class ReviewPage(QWidget):
@@ -26,7 +29,9 @@ class ReviewPage(QWidget):
         super().__init__(parent)
         self.service = service
         self.trades = []
+        self.setObjectName("reviewPage")
         root = QVBoxLayout(self)
+        filters, filter_layout = self.card()
         source_controls = QHBoxLayout()
         self.source = combo([("", "当前交易账户")])
         self.product_filter = combo([("", "全部产品"), ("spot", "现货"), ("swap", "永续")])
@@ -36,71 +41,173 @@ class ReviewPage(QWidget):
         self.tag_filter.setPlaceholderText("策略标签筛选")
         for widget in (self.source, self.product_filter, self.direction_filter, self.instrument_filter, self.tag_filter):
             source_controls.addWidget(widget)
-        root.addLayout(source_controls)
+        filter_layout.addLayout(source_controls)
         controls = QHBoxLayout()
         self.begin, self.end = QDateTimeEdit(), QDateTimeEdit()
         self.begin.setDateTime(QDateTime.currentDateTime().addDays(-30))
         self.end.setDateTime(QDateTime.currentDateTime())
-        for label, widget in (("起始", self.begin), ("结束", self.end)):
+        for text, widget in (("起始时间", self.begin), ("结束时间", self.end)):
             widget.setDisplayFormat("yyyy-MM-dd HH:mm")
             widget.setCalendarPopup(True)
-            controls.addWidget(QLabel(label))
-            controls.addWidget(widget)
+            widget.setFixedWidth(176)
+            field = QWidget()
+            field.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            pair = QHBoxLayout(field)
+            pair.setContentsMargins(0, 0, 0, 0)
+            pair.setSpacing(SPACING_XS)
+            label = QLabel(text)
+            label.setBuddy(widget)
+            pair.addWidget(label)
+            pair.addWidget(widget)
+            controls.addWidget(field)
         controls.addWidget(button("应用范围", self.refresh))
         self.sync_button = button("同步该范围历史", self.sync, True)
         controls.addWidget(self.sync_button)
-        controls.addWidget(button("清除选择", lambda: self.trade_table.clearSelection()))
-        root.addLayout(controls)
-        manual_actions = QHBoxLayout()
-        manual_actions.addWidget(button("补录交易", lambda: self.manual_requested.emit(str(self.source.currentData() or ""), "")))
-        manual_actions.addWidget(button("编辑手动记录", self.edit_manual))
-        manual_actions.addWidget(button("作废手动记录", self.void_manual))
-        manual_actions.addWidget(button("账户资金与流水", self.account_ledger))
-        manual_actions.addWidget(button("交易图表快照", self.view_snapshots))
-        root.addLayout(manual_actions)
         self.coverage = QLabel("配置 OKX 账户后自动同步近 30 天，或选择范围手动同步。")
+        self.coverage.setObjectName("muted")
         self.coverage.setWordWrap(True)
-        root.addWidget(self.coverage)
+        self.coverage.setMinimumWidth(0)
+        controls.addSpacing(SPACING_SM)
+        controls.addWidget(self.coverage, 1)
+        filter_layout.addLayout(controls)
+        root.addWidget(filters)
         splitter = QSplitter(Qt.Orientation.Horizontal)
-        left = QWidget()
-        layout = QVBoxLayout(left)
-        layout.setContentsMargins(0, 0, 0, 0)
+        self.records_splitter = SavedSplitter(Qt.Orientation.Vertical, service, "review_records_details")
+        self.records_splitter.setChildrenCollapsible(False)
+        records, records_layout = self.card()
+        record_header = QHBoxLayout()
+        title = QLabel("交易记录")
+        title.setObjectName("reviewSectionTitle")
+        record_header.addWidget(title)
+        record_header.addStretch()
+        record_header.addWidget(button("清除选择", lambda: self.trade_table.clearSelection()))
+        record_header.addWidget(button("补录交易", lambda: self.manual_requested.emit(str(self.source.currentData() or ""), "")))
+        more = QToolButton()
+        more.setText("更多操作")
+        more.setAccessibleName("更多交易操作")
+        more.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QMenu(more)
+        for text, callback in (("编辑手动记录", self.edit_manual), ("作废手动记录", self.void_manual),
+                               ("账户资金与流水", self.account_ledger), ("交易图表快照", self.view_snapshots)):
+            menu.addAction(text, callback)
+        more.setMenu(menu)
+        record_header.addWidget(more)
+        records_layout.addLayout(record_header)
         self.trade_table = table(["开仓时间", "合约 / 方向", "状态", "已实现", "费用", "资金费", "已知净额"], readable=True)
+        self.trade_table.setObjectName("reviewTable")
         self.trade_table.setColumnWidth(0, 135)
         self.trade_table.setColumnWidth(1, 170)
         self.trade_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.trade_table.doubleClicked.connect(self.show_trade)
-        layout.addWidget(self.trade_table, 2)
-        layout.addWidget(QLabel("选中行则复盘所选交易；未选择则按时间范围。双击查看记录与数据缺口。"))
-        layout.addWidget(button("编辑所选交易日志", self.edit_note))
-        layout.addWidget(button("继续与 AI 讨论所选交易", self.discuss_trade))
+        records_layout.addWidget(self.trade_table, 1)
+        selection_actions = QHBoxLayout()
+        hint = QLabel("可多选 · 双击查看详情")
+        hint.setObjectName("muted")
+        selection_actions.addWidget(hint)
+        selection_actions.addStretch()
+        selection_actions.addWidget(button("编辑日志", self.edit_note))
+        selection_actions.addWidget(button("与 AI 讨论", self.discuss_trade))
+        records_layout.addLayout(selection_actions)
+        self.records_splitter.addWidget(records)
+        details, details_layout = self.card()
+        self.detail_tabs = QTabWidget()
+        self.detail_tabs.setObjectName("reviewDetails")
+        summary = QWidget()
+        summary.setObjectName("reviewSummary")
+        summary_layout = QVBoxLayout(summary)
+        summary_layout.setContentsMargins(0, SPACING_SM, 0, 0)
+        self.stat_values: dict[str, QLabel] = {}
+        highlights = QHBoxLayout()
+        for key, title in (("known_net", "已知净盈亏 · USDT"), ("win_rate", "胜率"),
+                           ("trades", "完整平仓 · 笔")):
+            tile = QFrame()
+            tile.setObjectName("reviewMetricTile")
+            tile_layout = QVBoxLayout(tile)
+            tile_layout.setSpacing(SPACING_XS)
+            caption = QLabel(title)
+            caption.setObjectName("reviewMetricCaption")
+            value = QLabel("—")
+            value.setObjectName("reviewMetricValue")
+            value.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            tile_layout.addWidget(caption)
+            tile_layout.addWidget(value)
+            highlights.addWidget(tile, 1)
+            self.stat_values[key] = value
+        summary_layout.addLayout(highlights)
+        breakdown = QGridLayout()
+        for index, (key, title) in enumerate((("profit_factor", "盈亏因子"), ("average_r", "平均 R"),
+                ("max_drawdown", "最大已实现回撤"), ("average_win", "平均盈利"),
+                ("average_loss", "平均亏损"), ("average_duration_ms", "平均持仓"))):
+            pair = QHBoxLayout()
+            pair.setSpacing(SPACING_XS)
+            caption = QLabel(title)
+            caption.setObjectName("reviewMetricCaption")
+            value = QLabel("—")
+            value.setObjectName("reviewDetailValue")
+            value.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            pair.addWidget(caption)
+            pair.addWidget(value, 1)
+            breakdown.addLayout(pair, index // 3, index % 3)
+            breakdown.setColumnStretch(index % 3, 1)
+            self.stat_values[key] = value
+        summary_layout.addLayout(breakdown)
         self.stats_label = QLabel()
+        self.stats_label.setObjectName("reviewStatistics")
         self.stats_label.setWordWrap(True)
-        layout.addWidget(self.stats_label)
+        summary_layout.addWidget(self.stats_label)
         self.manual_curve = EquityCurve(service.store, "manual")
         self.manual_curve.caption = "累计已实现净盈亏 · USDT（完整已平仓交易）"
         self.manual_curve.empty_text = "暂无完整已平仓交易"
         self.manual_curve.set_points([])
         self.manual_curve.setVisible(False)
-        layout.addWidget(self.manual_curve)
-        self.group_choice = QTabWidget()
+        summary_layout.addWidget(self.manual_curve)
+        grouping = QHBoxLayout()
+        grouping.addWidget(QLabel("分组统计"))
+        grouping.addStretch()
+        self.group_by = combo([("direction", "按方向"), ("instrument", "按合约"), ("tag", "按标签")])
+        grouping.addWidget(self.group_by)
+        summary_layout.addLayout(grouping)
+        self.group_choice = QStackedWidget()
+        self.group_by.currentIndexChanged.connect(self.group_choice.setCurrentIndex)
         self.group_tables = {}
-        for key, title in (("direction", "方向"), ("instrument", "合约"), ("tag", "标签")):
+        for key in ("direction", "instrument", "tag"):
             group_table = table(["分组", "笔数", "胜率", "平均 R", "已知净额"], readable=True)
-            group_table.setMaximumHeight(125)
+            group_table.setObjectName("reviewTable")
             self.group_tables[key] = group_table
-            self.group_choice.addTab(group_table, title)
-        layout.addWidget(self.group_choice)
+            self.group_choice.addWidget(group_table)
+        summary_layout.addWidget(self.group_choice, 1)
+        summary_scroll = QScrollArea()
+        summary_scroll.setWidgetResizable(True)
+        summary_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        summary_scroll.setWidget(summary)
+        self.detail_tabs.addTab(summary_scroll, "统计概览")
+        report_page = QWidget()
+        report_layout = QVBoxLayout(report_page)
+        report_layout.setContentsMargins(0, SPACING_SM, 0, 0)
+        report_hint = QLabel("选择报告在右侧查看；重新生成会保留旧版。")
+        report_hint.setObjectName("muted")
+        report_hint.setWordWrap(True)
+        report_layout.addWidget(report_hint)
         self.reports = QListWidget()
+        self.reports.setObjectName("reviewReports")
         self.reports.itemClicked.connect(self.load_report)
-        layout.addWidget(QLabel("历史报告（重新生成保留旧版）"))
-        layout.addWidget(self.reports, 1)
-        splitter.addWidget(left)
+        report_layout.addWidget(self.reports, 1)
+        self.detail_tabs.addTab(report_page, "历史报告")
+        details_layout.addWidget(self.detail_tabs)
+        self.records_splitter.addWidget(details)
+        self.records_splitter.setStretchFactor(0, 1)
+        self.records_splitter.setStretchFactor(1, 1)
+        self.records_splitter.restore([240, 480])
+        handle = require(self.records_splitter.handle(1))
+        handle.setToolTip("上下拖动，调整交易记录与统计概览的高度")
+        handle.setAccessibleName("交易记录与统计概览高度分隔条")
+        splitter.addWidget(self.records_splitter)
         self.ai_panel = AiPanel(service, "review", self.context)
         self.ai_panel.chat_requested.connect(self.discuss_report)
         splitter.addWidget(self.ai_panel)
-        splitter.setSizes([600, 560])
-        root.addWidget(splitter)
+        splitter.setSizes([720, 560])
+        root.addWidget(splitter, 1)
         self.reload_books()
         self.source.currentIndexChanged.connect(self.source_changed)
         for choice in (self.product_filter, self.direction_filter):
@@ -111,6 +218,50 @@ class ReviewPage(QWidget):
         self.end.dateTimeChanged.connect(self.refresh)
         service.updated.connect(self.manual_updated)
         self.refresh()
+
+    def card(self) -> tuple[QFrame, QVBoxLayout]:
+        card = QFrame(self)
+        card.setObjectName("reviewCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(SPACING_SM, SPACING_SM, SPACING_SM, SPACING_SM)
+        return card, layout
+
+    def show_statistics(self, stats: Statistics | None) -> None:
+        """仅格式化既有统计，不把缺失样本当作零收益或零胜率。"""
+        values = {key: "—" for key in self.stat_values}
+        tone = "neutral"
+        if stats is not None:
+            net = stats["known_net"]
+            values.update(
+                known_net=f"{net:+,.2f}" if net else "0.00",
+                trades=str(stats["trades"]),
+                win_rate=f"{stats['win_rate']:.1%}" if stats["win_rate"] is not None else "—",
+                profit_factor=f"{stats['profit_factor']:.2f}" if stats["profit_factor"] is not None else "—",
+                average_r=f"{stats['average_r']:+.2f}R" if stats["average_r"] is not None else "—",
+                max_drawdown=f"{stats['max_drawdown']:,.2f}",
+                average_win=f"{stats['average_win']:,.2f}" if stats["average_win"] is not None else "—",
+                average_loss=f"{stats['average_loss']:,.2f}" if stats["average_loss"] is not None else "—",
+                average_duration_ms=f"{stats['average_duration_ms'] / 60000:.1f} 分钟"
+                    if stats["average_duration_ms"] is not None else "—")
+            tone = "positive" if net > 0 else "negative" if net < 0 else "neutral"
+            self.stats_label.setText(f"盈利 {stats['wins']} · 亏损 {stats['losses']} · 保本 {stats['breakeven']}"
+                                    f"    排除未完整平仓 {stats['excluded']} 笔 · R 样本 {stats['r_samples']} 笔")
+        else:
+            self.stats_label.clear()
+        amounts = {key: value for key, value in (
+            ("known_net", stats["known_net"]), ("max_drawdown", stats["max_drawdown"]),
+            ("average_win", stats["average_win"]), ("average_loss", stats["average_loss"]))} if stats is not None else {}
+        for key, label in self.stat_values.items():
+            label.setText(values[key])
+            amount = amounts.get(key)
+            label.setToolTip(f"{amount} USDT" if amount is not None else
+                             values[key] if values[key] != "—" else "暂无可计算样本")
+        net_label = self.stat_values["known_net"]
+        net_label.setProperty("tone", tone)
+        style = require(net_label.style())
+        style.unpolish(net_label)
+        style.polish(net_label)
+        net_label.update()
 
     def reload_books(self) -> None:
         current = self.source.currentData()
@@ -219,15 +370,7 @@ class ReviewPage(QWidget):
                 "未确认完整" if t.get("product") == "swap" and t.get("source") == "manual" and not t["record"]["funding_known"] else t["funding"],
                 t["net"] if t["net"] is not None else "暂无法计算"]) for t in reversed(self.trades)])
             stats = statistics(self.trades)
-            ratio = f"{stats['win_rate']:.1%}" if stats["win_rate"] is not None else "—"
-            factor = f"{stats['profit_factor']:.2f}" if stats["profit_factor"] is not None else "—"
-            average = f"{stats['average_r']:+.2f}R" if stats["average_r"] is not None else "—"
-            self.stats_label.setText(f"完整平仓 {stats['trades']} 笔 · 排除不完整 {stats['excluded']} 笔 · 胜率 {ratio} · "
-                                     f"Profit Factor {factor} · 平均 {average}（{stats['r_samples']} 笔） · "
-                                     f"最大已实现回撤 {stats['max_drawdown']} USDT\n"
-                                     f"盈利 {stats['wins']} / 亏损 {stats['losses']} / 保本 {stats['breakeven']} · 净盈亏 {stats['known_net']} USDT\n"
-                                     f"平均盈利 {stats['average_win'] if stats['average_win'] is not None else '—'} / 平均亏损 {stats['average_loss'] if stats['average_loss'] is not None else '—'} USDT · "
-                                     f"平均持仓 {round(stats['average_duration_ms'] / 60000, 1) if stats['average_duration_ms'] is not None else '—'} 分钟")
+            self.show_statistics(stats)
             cumulative = number("0")
             points = [{"time": begin * 1000, "equity": "0"}]
             for trade in sorted((t for t in self.trades if t["status"] == "closed"), key=lambda t: (t["end"], t["id"])):
@@ -249,7 +392,9 @@ class ReviewPage(QWidget):
         except (ValueError, KeyError) as exc:
             self.trades = []
             fill_table(self.trade_table, [])
-            self.stats_label.clear()
+            self.show_statistics(None)
+            for group_table in self.group_tables.values():
+                fill_table(group_table, [])
             self.manual_curve.set_points([])
             self.coverage.setText(str(exc))
 

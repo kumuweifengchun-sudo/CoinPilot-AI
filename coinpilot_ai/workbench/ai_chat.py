@@ -20,6 +20,7 @@ from coinpilot_ai.indicators.editor import IndicatorEditor
 from coinpilot_ai.indicators.models import IndicatorInstance
 from coinpilot_ai.indicators.validation import instance_record
 from coinpilot_ai.ui.qt import require
+from coinpilot_ai.ui.theme import SPACING_SM, SPACING_XS
 from .ai_cells import AiIndicatorDraftCard, AiMessageCell, AiOrderDraftCard, AiToolCard
 
 
@@ -58,8 +59,11 @@ class AiChatPanel(QWidget):
         self._presets: list[Preset] = list(PRESETS)
         self.setMinimumSize(280, 200)
         root = QVBoxLayout(self)
-        root.setContentsMargins(6, 5, 6, 5)
+        # 外层工作区容器提供统一内边距，避免聊天面板重复叠加留白。
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(SPACING_SM)
         header = QHBoxLayout()
+        header.setSpacing(SPACING_XS)
         title = QLabel("CoinPilot AI")
         title.setObjectName("sectionTitle")
         header.addWidget(title)
@@ -86,6 +90,7 @@ class AiChatPanel(QWidget):
         self.history.currentIndexChanged.connect(self.choose_history)
         root.addWidget(self.history)
         row = QHBoxLayout()
+        row.setSpacing(SPACING_XS)
         self.preset = QComboBox()
         for preset in PRESETS:
             self.preset.addItem(preset.title, preset.id)
@@ -100,6 +105,7 @@ class AiChatPanel(QWidget):
         self.pin_host = QWidget()
         self.pin_layout = QHBoxLayout(self.pin_host)
         self.pin_layout.setContentsMargins(0, 0, 0, 0)
+        self.pin_layout.setSpacing(SPACING_XS)
         pins = QScrollArea()
         pins.setWidgetResizable(True)
         pins.setFixedHeight(38)
@@ -110,6 +116,7 @@ class AiChatPanel(QWidget):
         self.content = QWidget()
         self.messages = QVBoxLayout(self.content)
         self.messages.setContentsMargins(0, 0, 0, 0)
+        self.messages.setSpacing(SPACING_SM)
         self.messages.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.message_scroll.setWidget(self.content)
         root.addWidget(self.message_scroll, 1)

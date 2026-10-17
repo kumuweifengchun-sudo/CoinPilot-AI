@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import QComboBox, QDateTimeEdit, QHBoxLayout, QLabel, QVBox
 from .depth import MarketMicro
 from .microstructure import volume_profile
 from coinpilot_ai.ui.common import fill_table, table
+from coinpilot_ai.ui.theme import SPACING_SM
 
 
 class MicroPanel(QWidget):
@@ -17,7 +18,7 @@ class MicroPanel(QWidget):
         self.service, self.chart = service, chart
         self.feed = MarketMicro(service, self)
         root = QVBoxLayout(self)
-        root.setContentsMargins(3, 3, 3, 3)
+        root.setContentsMargins(SPACING_SM, SPACING_SM, SPACING_SM, SPACING_SM)
         self.status = QLabel("选中合约的公开盘口与逐笔成交")
         root.addWidget(self.status)
         self.derivatives = QLabel()
@@ -44,6 +45,8 @@ class MicroPanel(QWidget):
         self.profile = QLabel("等待逐笔成交数据")
         self.profile.setWordWrap(True)
         root.addWidget(self.profile)
+        # 多余高度留在底部，避免行情为空时 Qt 把标签行拉高，造成不等距空白。
+        root.addStretch()
         self.render_timer = QTimer(self)
         self.render_timer.setSingleShot(True)
         self.render_timer.setInterval(250)

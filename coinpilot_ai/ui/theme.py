@@ -137,14 +137,13 @@ QToolTip { color: ${text}; background: ${tooltip}; border: 1px solid ${border_st
 
 _STYLE = Template("""
 QMainWindow, QDialog, QWidget#workbenchRoot { background: ${background}; }
-QDockWidget { border: 1px solid ${border}; }
+QDockWidget { border: 1px solid ${border}; border-radius: ${radius_lg}px; }
 QDockWidget::title { background: ${surface_raised}; padding: 6px; color: ${text_secondary}; }
-QWidget#dockTitleBar { background: ${surface_raised}; }
+QWidget#dockTitleBar { background: ${surface_raised}; border: 1px solid ${border}; border-bottom: none; border-top-left-radius: ${radius_lg}px; border-top-right-radius: ${radius_lg}px; }
+QFrame#dockPanelSurface { background: ${background}; border: 1px solid ${border}; border-top: none; border-bottom-left-radius: ${radius_lg}px; border-bottom-right-radius: ${radius_lg}px; }
 QWidget#dockTitleBar QToolButton { padding: 0; border: none; border-radius: 3px; background: transparent; }
 QWidget#dockTitleBar QToolButton:hover { background: ${surface_hover}; }
 QWidget#dockTitleBar QToolButton:pressed { background: ${surface_selected}; }
-QMainWindow::separator { background: ${border}; width: ${space_xs}px; height: ${space_xs}px; }
-QMainWindow::separator:hover { background: ${border_strong}; }
 QWidget { color: ${text_secondary}; font-family: 'Inter Variable', 'Microsoft YaHei UI'; font-size: 12px; }
 QLabel { background: transparent; border: none; }
 QLabel#title { font-size: 20px; font-weight: 600; color: ${text}; }
@@ -152,6 +151,20 @@ QLabel#muted { color: ${text_muted}; }
 QLabel#sectionTitle { font-size: 13px; font-weight: 600; color: ${text}; padding: 4px 0; }
 QWidget#sidePanel { background: ${surface}; border: 1px solid ${border}; border-radius: 8px; }
 QWidget#tradeFormContent { background: ${surface}; }
+QFrame#reviewCard { background: ${surface}; border: 1px solid ${border}; border-radius: ${radius_lg}px; }
+QLabel#reviewSectionTitle { color: ${text}; font-size: 13px; font-weight: 600; }
+QLabel#reviewStatistics { color: ${text_muted}; font-size: 11px; padding: ${space_xs}px 0; }
+QFrame#reviewMetricTile { background: ${surface_raised}; border: 1px solid ${border}; border-radius: ${radius_default}px; }
+QWidget#reviewSummary { background: ${surface}; }
+QLabel#reviewMetricCaption { color: ${text_muted}; font-size: 11px; }
+QLabel#reviewMetricValue { color: ${text}; font-size: 22px; font-weight: 600; }
+QLabel#reviewMetricValue[tone="positive"] { color: ${positive}; }
+QLabel#reviewMetricValue[tone="negative"] { color: ${negative}; }
+QLabel#reviewDetailValue { color: ${text_secondary}; font-weight: 600; }
+QTableWidget#reviewTable, QListWidget#reviewReports { border: none; border-radius: 0; background: ${surface}; }
+QTabWidget#reviewDetails::pane { border: none; background: ${surface}; }
+QGroupBox#reviewAiPanel { margin-top: 0; padding: 40px ${space_sm}px ${space_sm}px; }
+QGroupBox#reviewAiPanel::title { subcontrol-origin: margin; subcontrol-position: top left; top: ${space_sm}px; left: ${space_sm}px; padding: 0 ${space_xs}px; color: ${text}; font-size: 13px; font-weight: 600; }
 QTabWidget::pane { border: 1px solid ${border}; background: ${surface}; border-radius: 6px; top: -1px; }
 QTabBar { background: transparent; }
 QTabBar::tab { background: transparent; padding: ${space_sm}px ${space_md}px; margin-right: ${space_xs}px; color: ${text_muted}; border-bottom: 2px solid transparent; }
@@ -210,8 +223,6 @@ QScrollBar::handle:hover { background: ${text_muted}; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
 QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
-QSplitter::handle { background: ${border}; }
-QSplitter::handle:hover { background: ${border_strong}; }
 QWidget#dockTitleBar QLabel { color: ${text}; font-weight: 600; }
 QListWidget#settingsNavigation { background: ${surface}; border: none; padding: ${space_sm}px; }
 QListWidget#settingsNavigation::item { padding: 12px ${space_sm}px; margin-bottom: ${space_xs}px; }

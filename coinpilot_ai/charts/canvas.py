@@ -520,6 +520,14 @@ class CandleChart(ChartRenderer, QWidget):
         self.setFocus()
         self.update()
 
+    def finish_drawing(self, obj: Drawing) -> None:
+        self.objects.append(obj)
+        self.selected_id = obj["id"]
+        self.persist_objects()
+        self.selection_changed.emit()
+        self.set_tool("cursor")
+        self.tool_finished.emit()
+
     def selected(self) -> Drawing | None:
         return next((o for o in self.objects if o["id"] == self.selected_id), None)
 
@@ -619,13 +627,7 @@ class CandleChart(ChartRenderer, QWidget):
                     return
                 obj = self.preview
                 obj["anchors"][0] = anchor
-                self.preview = None
-                self.objects.append(obj)
-                self.selected_id = obj["id"]
-                self.persist_objects()
-                self.selection_changed.emit()
-                self.set_tool("cursor")
-                self.tool_finished.emit()
+                self.finish_drawing(obj)
             else:
                 index = self.pattern_index(pos)
                 if index is not None:
@@ -697,10 +699,7 @@ class CandleChart(ChartRenderer, QWidget):
                 spec = self.service.specs.get(self.instrument, {}) if self.service else {}
                 dialog = DrawingDialog(obj, self, tick_size=spec.get('tickSz'))
                 if dialog.exec() == dialog.DialogCode.Accepted:
-                    self.objects.append(dialog.result_object)
-                    self.selected_id = obj['id']
-                    self.persist_objects()
-                    self.selection_changed.emit()
+                    self.finish_drawing(dialog.result_object)
                 dialog.deleteLater()
             self.update()
             return
@@ -717,12 +716,7 @@ class CandleChart(ChartRenderer, QWidget):
         else:
             self.preview = drawing(self.tool, [a, a])
             return
-        self.objects.append(obj)
-        self.selected_id = obj["id"]
-        self.persist_objects()
-        self.selection_changed.emit()
-        # 完成当前对象后清空预览，保留工具，下一次点击开始新的对象。
-        self.set_tool(self.tool)
+        self.finish_drawing(obj)
 
     def mouseMoveEvent(self, a0):
         event = require(a0)
@@ -899,9 +893,7 @@ class CandleChart(ChartRenderer, QWidget):
             return
         obj = drawing('region', anchors)
         obj.update(color=chosen.name(), fill_color=chosen.name(), fill_opacity=20)
-        self.objects.append(obj)
-        self.selected_id = obj['id']
-        self.persist_objects()
+        self.finish_drawing(obj)
 
     def context_menu(self, position):
         self.cancel_pending_draw()

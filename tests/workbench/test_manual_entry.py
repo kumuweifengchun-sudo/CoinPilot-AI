@@ -4,9 +4,9 @@ from pathlib import Path
 import time
 from unittest.mock import patch
 
-from PyQt6.QtCore import QDateTime
+from PyQt6.QtCore import QDateTime, QEvent, QPoint, Qt
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QLabel, QToolButton
 import pytest
 
 from coinpilot_ai.ai.context import WorkspaceSnapshot
@@ -18,8 +18,10 @@ from coinpilot_ai.core.config import DEFAULT_CONFIG
 from coinpilot_ai.review.manual import EquitySnapshot, ManualFill, ManualTrade, calculate, reference
 from coinpilot_ai.review.manual_widgets import AmountEditor, ManualEntry, set_time
 from coinpilot_ai.review.page import ReviewPage
+from coinpilot_ai.review.statistics import statistics
 from coinpilot_ai.trading.panel import TradeController
 from coinpilot_ai.ui.common import select_data
+from coinpilot_ai.ui.qt import require
 
 
 class EmptyVault:
@@ -93,7 +95,7 @@ def test_shared_entry_no_credentials_draft_isolation_and_review(service: Cockpit
     page.end.setDateTime(QDateTime.currentDateTime().addSecs(1))
     page.refresh()
     assert page.trade_table.rowCount() == 1
-    assert "净盈亏 20" in page.stats_label.text()
+    assert page.stat_values["known_net"].text() == "+20.00"
     assert not page.sync_button.isEnabled()
     assert page.context()["manual_book_id"] == book
     page.tag_filter.setText("不匹配")
@@ -104,6 +106,142 @@ def test_shared_entry_no_credentials_draft_isolation_and_review(service: Cockpit
     page.deleteLater()
     controller.sidebar.deleteLater()
     controller.bottom.deleteLater()
+
+
+def test_review_grouping_history_and_more_actions_keep_existing_context(
+        service: CockpitService, app: QApplication) -> None:
+    book = service.manual_ledger.create_book("复盘布局", "离线", "A")
+    saved = service.manual_ledger.save(trade(book))
+    report_key = service.store.append("report", {
+        "time": time.time(), "status": "complete", "answer": "离线历史报告",
+        "service": {"name": "模拟服务", "model": "offline"},
+        "template": {"name": "复盘模板", "version": 1},
+        "context": {"manual_book_id": book},
+    }, service.manual_ledger.scope(book))
+    page = ReviewPage(service)
+    select_data(page.source, book)
+    page.end.setDateTime(QDateTime.currentDateTime().addSecs(1))
+    page.resize(1280, 900)
+    page.show()
+    app.processEvents()
+    requests: list[tuple[str, str]] = []
+    page.manual_requested.connect(lambda book_id, key: requests.append((book_id, key)))
+    try:
+        page.trade_table.selectRow(0)
+        for key in ("direction", "instrument", "tag"):
+            select_data(page.group_by, key)
+            assert page.group_choice.currentWidget() is page.group_tables[key]
+            assert page.context()["manual_book_id"] == book
+        more = next(widget for widget in page.findChildren(QToolButton)
+                    if widget.accessibleName() == "更多交易操作")
+        menu = require(more.menu())
+        assert [action.text() for action in menu.actions()] == [
+            "编辑手动记录", "作废手动记录", "账户资金与流水", "交易图表快照"]
+        menu.actions()[0].trigger()
+        assert requests == [(book, saved.id)]
+        page.detail_tabs.setCurrentIndex(1)
+        page.ai_panel.setChecked(False)
+        assert not page.ai_panel.body.isVisible()
+        page.reports.itemClicked.emit(require(page.reports.item(0)))
+        app.processEvents()
+        assert page.ai_panel.isChecked() and page.ai_panel.body.isVisible()
+        assert page.ai_panel.answer.toPlainText() == "离线历史报告"
+        assert require(page.ai_panel.last_record)["id"] == report_key
+        assert page.trade_table.rowCount() == 1
+    finally:
+        page.close()
+        page.deleteLater()
+
+
+@pytest.mark.parametrize("width", [1000, 1440])
+def test_review_time_labels_stay_next_to_fields(
+        service: CockpitService, app: QApplication, width: int) -> None:
+    page = ReviewPage(service)
+    page.resize(width, 900)
+    page.show()
+    app.processEvents()
+    try:
+        assert page.width() <= width
+        for editor in (page.begin, page.end):
+            label = next(label for label in require(editor.parentWidget()).findChildren(QLabel)
+                         if label.buddy() is editor)
+            assert editor.x() - label.geometry().right() - 1 == 4
+    finally:
+        page.close()
+        page.deleteLater()
+
+
+def test_review_vertical_drag_saves_height_and_keeps_panels_visible(
+        service: CockpitService, app: QApplication) -> None:
+    app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    page = ReviewPage(service)
+    page.resize(1280, 900)
+    page.show()
+    app.processEvents()
+    restored: ReviewPage | None = None
+    try:
+        splitter = page.records_splitter
+        handle = require(splitter.handle(1))
+        before = splitter.sizes()
+        point = handle.rect().center()
+        QTest.mousePress(handle, Qt.MouseButton.LeftButton, pos=point)
+        QTest.mouseMove(handle, point + QPoint(0, 70))
+        QTest.mouseRelease(handle, Qt.MouseButton.LeftButton, pos=handle.rect().center())
+        app.processEvents()
+        saved = splitter.sizes()
+        assert saved[0] > before[0] and saved[1] < before[1]
+        assert service.store.get('chart_layout', 'review_records_details') == saved
+        page.detail_tabs.setCurrentIndex(1)
+        page.hide()
+        page.show()
+        app.processEvents()
+        assert splitter.sizes() == saved
+        restored = ReviewPage(service)
+        restored.resize(1280, 900)
+        restored.show()
+        app.processEvents()
+        assert all(abs(a - b) <= 1 for a, b in zip(restored.records_splitter.sizes(), saved))
+        splitter.setSizes([0, sum(saved)])
+        app.processEvents()
+        assert all(size > 0 for size in splitter.sizes())
+        splitter.setSizes([sum(saved), 0])
+        app.processEvents()
+        assert all(size > 0 for size in splitter.sizes())
+    finally:
+        if restored is not None:
+            restored.close()
+            restored.deleteLater()
+        page.close()
+        page.deleteLater()
+
+
+@pytest.mark.parametrize('net, expected, tone', [
+    ('25.50', '+25.50', 'positive'), ('-5.25', '-5.25', 'negative'),
+    ('0', '0.00', 'neutral'), (None, '0.00', 'neutral')])
+def test_review_metric_cards_preserve_values_missing_samples_and_error_reset(
+        service: CockpitService, net: str | None, expected: str, tone: str) -> None:
+    page = ReviewPage(service)
+    rows: list[dict[str, object]] = [] if net is None else [
+        {'id': 'offline', 'status': 'closed', 'start': 0, 'end': 60000,
+         'net': net, 'note': {'risk_budget': '10'}}]
+    try:
+        page.show_statistics(statistics(rows))
+        assert page.stat_values['known_net'].text() == expected
+        assert page.stat_values['known_net'].property('tone') == tone
+        assert page.stat_values['trades'].text() == ('0' if net is None else '1')
+        if net is None:
+            for key in ('win_rate', 'average_r', 'average_win', 'average_loss', 'average_duration_ms'):
+                assert page.stat_values[key].text() == '—'
+        else:
+            assert page.stat_values['known_net'].toolTip() == f'{net} USDT'
+            assert page.stat_values['average_duration_ms'].text() == '1.0 分钟'
+        # 无效日期范围不能遗留上一轮的收益、胜率或盈亏颜色。
+        page.begin.setDateTime(page.end.dateTime())
+        assert all(value.text() == '—' for value in page.stat_values.values())
+        assert page.stat_values['known_net'].property('tone') == 'neutral'
+        assert all(table.rowCount() == 0 for table in page.group_tables.values())
+    finally:
+        page.deleteLater()
 
 
 def run_tool(service: CockpitService, name: str, arguments: dict[str, JsonValue], *, allowed: bool = True) -> ToolResult:

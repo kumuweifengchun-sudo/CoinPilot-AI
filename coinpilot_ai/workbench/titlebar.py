@@ -225,8 +225,9 @@ class DockTitleBar(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
         self.setFixedHeight(28)
         row = QHBoxLayout(self)
-        row.setContentsMargins(8, 2, 4, 2)
-        row.setSpacing(2)
+        # 固定高度标题栏中的按钮垂直居中，不额外堆叠上下内边距。
+        row.setContentsMargins(SPACING_SM, 0, SPACING_XS, 0)
+        row.setSpacing(SPACING_XS)
         label = QLabel(dock.windowTitle())
         label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         dock.windowTitleChanged.connect(label.setText)

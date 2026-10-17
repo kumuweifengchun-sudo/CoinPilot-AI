@@ -9,6 +9,7 @@ from coinpilot_ai.application.service import DEMO_CHECKS
 from coinpilot_ai.ui.common import button, combo, select_data, show_text
 from coinpilot_ai.trading.dialogs import RuleDialog
 from coinpilot_ai.ui.icons import icon
+from coinpilot_ai.ui.theme import SPACING_SM
 from coinpilot_ai.ai.providers.base import ProviderConfig
 
 
@@ -150,7 +151,7 @@ class SettingsPage(QWidget):
         content = QWidget()
         content.setObjectName("workbenchRoot")
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setContentsMargins(SPACING_SM, SPACING_SM, SPACING_SM, SPACING_SM)
         heading = QLabel(title)
         heading.setObjectName("title")
         layout.addWidget(heading)
@@ -159,7 +160,7 @@ class SettingsPage(QWidget):
         description = QLabel(descriptions.get(title, ""))
         description.setObjectName("muted")
         layout.addWidget(description)
-        layout.addSpacing(8)
+        layout.addSpacing(SPACING_SM)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(content)

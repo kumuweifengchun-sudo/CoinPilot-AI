@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (QComboBox, QDateTimeEdit, QFormLayout, QHBoxLayout,
                              QLineEdit, QScrollArea, QSpinBox, QTabWidget, QVBoxLayout, QWidget)
 
 from coinpilot_ai.ui.qt import require
+from coinpilot_ai.ui.theme import SPACING_SM
 from coinpilot_ai.charts.canvas import CandleChart
 from coinpilot_ai.market.intervals import BARS, shift, floor_time
 from coinpilot_ai.trading.models import instrument_id, number
@@ -146,7 +147,7 @@ class ReplayPage(QWidget):
         self.detail_tabs.addTab(self.alerts, "训练提醒")
         journal_page = QWidget()
         journal_layout = QVBoxLayout(journal_page)
-        journal_layout.setContentsMargins(3, 3, 3, 3)
+        journal_layout.setContentsMargins(SPACING_SM, SPACING_SM, SPACING_SM, SPACING_SM)
         journal_controls = QHBoxLayout()
         self.stats_group = QComboBox()
         for value, title in (("all", "全部"), ("direction", "按方向"), ("instrument", "按合约"), ("tag", "按标签")):

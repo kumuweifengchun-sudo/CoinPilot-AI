@@ -7,9 +7,10 @@ if TYPE_CHECKING:
 
 from PyQt6.QtCore import QByteArray, QEvent, QObject, Qt, QTimer
 from PyQt6.QtGui import QAction
-from PyQt6.QtWidgets import QApplication, QDockWidget, QMainWindow, QTabWidget
+from PyQt6.QtWidgets import QApplication, QDockWidget, QFrame, QMainWindow, QTabWidget, QVBoxLayout
 
 from coinpilot_ai.ui.qt import require, application
+from coinpilot_ai.ui.theme import SPACING_SM
 from .titlebar import DockTitleBar
 from .dock import IndependentDock
 
@@ -39,7 +40,15 @@ class WorkspaceLayout(QObject):
         for key, (title, widget) in panels.items():
             dock = IndependentDock(title, self.host)
             dock.setObjectName('workspace_' + key)
-            dock.setWidget(widget)
+            # 停靠状态下 QDockWidget 的 QSS 边框不会围住内容，使用真实容器绘制。
+            surface = QFrame(dock)
+            surface.setObjectName('dockPanelSurface')
+            content = QVBoxLayout(surface)
+            # 由模块容器统一负责四周留白，工具栏、表格和状态栏不再贴边。
+            content.setContentsMargins(SPACING_SM, SPACING_SM, SPACING_SM, SPACING_SM)
+            content.setSpacing(0)
+            content.addWidget(widget)
+            dock.setWidget(surface)
             dock.setTitleBarWidget(DockTitleBar(dock))
             dock.installEventFilter(self)
             dock.dockLocationChanged.connect(self.schedule)

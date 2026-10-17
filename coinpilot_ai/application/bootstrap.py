@@ -20,6 +20,7 @@ from coinpilot_ai.ui.typography import font, load_fonts
 from coinpilot_ai.core.paths import resource_path
 from coinpilot_ai.desktop.widget import CoinPilotWidget
 from coinpilot_ai.ui.theme import activate_theme, palette, style_sheet
+from coinpilot_ai.ui.separators import PanelStyle
 from coinpilot_ai.core.version import VERSION
 from coinpilot_ai.desktop.single_instance import SingleInstance
 
@@ -63,7 +64,7 @@ def create_application(argv):
     # 使用各窗口自己的标题，避免 Windows 再追加一遍应用名称。
     app.setApplicationDisplayName("")
     app.setOrganizationName("CoinPilotAI")
-    app.setStyle("Fusion")
+    app.setStyle(PanelStyle("Fusion"))
     app.inter_font_loaded = load_fonts()
     app.setPalette(palette())
     app.setStyleSheet(style_sheet())

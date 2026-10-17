@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (QCheckBox, QDateTimeEdit, QDialog, QDialogButtonBox
     QTextEdit, QVBoxLayout, QWidget)
 
 from coinpilot_ai.ui.common import button, combo, confirm, fill_table, select_data, selected_id, show_text, table, timestamp
+from coinpilot_ai.ui.theme import SPACING_SM
 from coinpilot_ai.trading.models import number
 from coinpilot_ai.charts.snapshot import CapturedChart
 from .snapshots import ChartSnapshot, MAX_SNAPSHOTS
@@ -213,7 +214,7 @@ class ManualEntry(QWidget):
         scroll.setWidgetResizable(True)
         body = QWidget()
         layout = QVBoxLayout(body)
-        layout.setSpacing(8)
+        layout.setSpacing(SPACING_SM)
         self.book = combo([])
         self.reload_books()
         books = QHBoxLayout()

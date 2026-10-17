@@ -2,9 +2,9 @@
 import time
 import uuid
 
-from PyQt6.QtCore import Qt, QObject, pyqtSignal
+from PyQt6.QtCore import QPoint, Qt, QObject, pyqtSignal
 from PyQt6.QtWidgets import (QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout,
-    QInputDialog, QLabel, QLineEdit, QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
+    QInputDialog, QLabel, QLineEdit, QMenu, QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
 
 from .models import OrderDraft, aligned, instrument_id, number
 from .risk import position_plan
@@ -12,6 +12,7 @@ from coinpilot_ai.review.equity_curve import EquityCurve
 from coinpilot_ai.review.manual_widgets import ManualEntry
 from coinpilot_ai.ui.common import AccountTabs, button, confirm, fill_table, selected_id, table, timestamp
 from coinpilot_ai.ui.common import combo, select_data
+from coinpilot_ai.ui.theme import SPACING_SM, SPACING_XS
 
 STATES = {"submitting": "提交中", "unknown": "结果待确认", "live": "挂单中", "partially_filled": "部分成交", "filled": "已成交", "canceled": "已撤销", "failed": "失败", "accepted": "已接受", "confirmed": "已核实"}
 
@@ -85,10 +86,13 @@ class TradeController(QObject):
         self.bottom = QWidget()
         bottom_layout = QVBoxLayout(self.bottom)
         bottom_layout.setContentsMargins(0, 0, 0, 0)
-        bottom_layout.setSpacing(2)
+        bottom_layout.setSpacing(SPACING_SM)
         self.tabs = AccountTabs()
         bottom_layout.addWidget(self.tabs.selector)
         self.position_table = table(["合约", "方向 / 模式", "持仓 / 可平(张)", "开仓均价", "未实现盈亏", "杠杆"], readable=True)
+        self.position_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.position_table.customContextMenuRequested.connect(self.position_menu)
+        self.position_table.setToolTip("右键持仓行可载入平仓草稿或设置止盈止损")
         self.order_table = table(["合约", "买卖 / 类型", "数量(张)", "价格", "状态"], readable=True)
         self.algo_table = table(["合约", "买卖", "张数", "止损", "止盈", "状态"], readable=True)
         self.local_table = table(["时间", "合约", "开平 / 方向", "状态", "止盈止损 / 结果"], readable=True)
@@ -97,14 +101,16 @@ class TradeController(QObject):
             self.tabs.addTab(widget, title)
         self.equity_curve = EquityCurve(service.store, "paper:local")
         bottom_layout.addWidget(self.tabs, 1)
-        self.action_buttons = [button("载入平仓", self.load_position),
-            button("止盈止损", self.protect_position), button("撤销订单", self.cancel_order),
+        self.action_buttons = [button("撤销订单", self.cancel_order),
             button("查询结果", lambda: (self.service.trading.recover(), self.service.recover_actions()))]
-        actions = QHBoxLayout()
+        self.account_actions = QWidget()
+        actions = QHBoxLayout(self.account_actions)
+        actions.setContentsMargins(0, 0, 0, 0)
+        actions.setSpacing(SPACING_XS)
         for btn in self.action_buttons:
             actions.addWidget(btn)
         actions.addStretch()
-        bottom_layout.addLayout(actions)
+        bottom_layout.addWidget(self.account_actions)
         self.operation_feedback = QLabel()
         self.operation_feedback.setWordWrap(True)
         self.operation_feedback.setMaximumHeight(36)
@@ -115,8 +121,8 @@ class TradeController(QObject):
         sidebar = QWidget()
         sidebar.setObjectName("sidePanel")
         side_layout = QVBoxLayout(sidebar)
-        side_layout.setContentsMargins(9, 8, 9, 8)
-        side_layout.setSpacing(7)
+        side_layout.setContentsMargins(SPACING_SM, SPACING_SM, SPACING_SM, SPACING_SM)
+        side_layout.setSpacing(SPACING_SM)
         heading = QLabel("委托下单")
         heading.setObjectName("sectionTitle")
         side_layout.addWidget(heading)
@@ -129,7 +135,11 @@ class TradeController(QObject):
         form_widget.setObjectName("tradeFormContent")
         form_layout = QVBoxLayout(form_widget)
         form_layout.setContentsMargins(0, 0, 0, 0)
+        form_layout.setSpacing(SPACING_SM)
         form = QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setVerticalSpacing(SPACING_SM)
+        form.setHorizontalSpacing(SPACING_XS)
         self.inst = QLineEdit(service.selected)
         self.inst.editingFinished.connect(self.select_instrument)
         self.action = combo([("open:long", "开多"), ("open:short", "开空"), ("close:long", "平多"), ("close:short", "平空")])
@@ -180,6 +190,7 @@ class TradeController(QObject):
         self.sidebar = QWidget()
         wrapper = QVBoxLayout(self.sidebar)
         wrapper.setContentsMargins(0, 0, 0, 0)
+        wrapper.setSpacing(SPACING_SM)
         wrapper.addWidget(self.entry_mode)
         wrapper.addWidget(self.entry_stack, 1)
         self.entry_mode.currentIndexChanged.connect(self.entry_stack.setCurrentIndex)
@@ -194,8 +205,45 @@ class TradeController(QObject):
 
     def update_actions(self, *_):
         index = self.tabs.currentIndex()
-        for btn, visible in zip(self.action_buttons, (index == 0, index == 0, index in (1, 2), index == 3)):
+        for btn, visible in zip(self.action_buttons, (index in (1, 2), index == 3)):
             btn.setVisible(visible)
+        self.account_actions.setVisible(index in (1, 2, 3))
+
+    def position_menu(self, point: QPoint) -> None:
+        row = self.position_table.rowAt(point.y())
+        item = self.position_table.item(row, 0) if row >= 0 else None
+        if item is None:
+            return
+        identity = item.data(Qt.ItemDataRole.UserRole)
+        if not identity or self.service.closed:
+            return
+        self.position_table.selectRow(row)
+        generation, scope = self.service.generation, self.service.scope
+        menu = QMenu(self.position_table)
+        close_action = menu.addAction("载入平仓草稿…")
+        protect_action = menu.addAction("设置止盈止损…")
+        viewport = self.position_table.viewport()
+        if viewport is None:
+            menu.deleteLater()
+            return
+        chosen = menu.exec(viewport.mapToGlobal(point))
+        menu.deleteLater()
+        if chosen is None or self.service.closed:
+            return
+        # 菜单打开期间账户或持仓可能刷新，不能把操作应用到新账户或另一行。
+        if generation != self.service.generation or scope != self.service.scope:
+            self.set_feedback("账户已切换，请重新选择持仓。")
+            return
+        for index in range(self.position_table.rowCount()):
+            current = self.position_table.item(index, 0)
+            if current is not None and current.data(Qt.ItemDataRole.UserRole) == identity:
+                self.position_table.selectRow(index)
+                if chosen == close_action:
+                    self.load_position()
+                elif chosen == protect_action:
+                    self.protect_position()
+                return
+        self.set_feedback("该持仓已更新或移除，请重新选择持仓。")
 
     def draft(self):
         action, direction = self.action.currentData().split(":")

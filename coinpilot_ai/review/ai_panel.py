@@ -23,10 +23,16 @@ class AiPanel(QGroupBox):
         root = QVBoxLayout(self)
         self.body = QWidget()
         layout = QVBoxLayout(self.body)
+        if scene == "review":
+            self.setObjectName("reviewAiPanel")
+            root.setContentsMargins(0, 0, 0, 0)
+            layout.setContentsMargins(0, 0, 0, 0)
         self.templates = QComboBox()
         self.templates.currentIndexChanged.connect(self.load_template)
         layout.addWidget(self.templates)
         self.prompt = QTextEdit()
+        if scene == "review":
+            layout.addWidget(QLabel("复盘提示词"))
         self.prompt.setMaximumHeight(110)
         layout.addWidget(self.prompt)
         self.question = QLineEdit()
@@ -50,14 +56,19 @@ class AiPanel(QGroupBox):
         self.answer = QTextBrowser()
         self.answer.setOpenExternalLinks(False)
         self.answer.setMinimumHeight(140)
+        if scene == "review":
+            layout.addWidget(QLabel("分析结果"))
+            self.answer.setPlaceholderText("选择交易和模板，生成复盘报告；也可从左侧历史报告中查看已有内容。")
         layout.addWidget(self.answer, 1)
         if scene == "order":
             self.load_draft_button = button("载入订单草稿到下单面板", self.load_draft)
             self.load_draft_button.setEnabled(False)
             layout.addWidget(self.load_draft_button)
         if scene == "review":
-            layout.addWidget(button("针对当前报告追问", self.followup))
-            layout.addWidget(button("继续与聊天助手讨论", self.discuss_report))
+            report_actions = QHBoxLayout()
+            report_actions.addWidget(button("追问当前报告", self.followup))
+            report_actions.addWidget(button("转到聊天助手", self.discuss_report))
+            layout.addLayout(report_actions)
         root.addWidget(self.body)
         self.toggled.connect(self.set_expanded)
         self.setChecked(scene == "review")

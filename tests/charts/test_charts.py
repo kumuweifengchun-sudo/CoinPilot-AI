@@ -335,7 +335,12 @@ def test_tools_create_edit_lock_delete_undo_redo(chart, app, monkeypatch, tool):
         QTest.mouseClick(chart, Qt.MouseButton.LeftButton, pos=QPoint(500, 240))
     assert len(chart.objects) == 1
     first = deepcopy(chart.objects[0])
-    assert chart.tool == tool and chart.preview is None
+    assert chart.tool == "cursor" and chart.preview is None
+    assert chart.cursor().shape() == Qt.CursorShape.ArrowCursor
+    # 后续单击只选择或平移；再次绘图需要重新选择工具。
+    QTest.mouseClick(chart, Qt.MouseButton.LeftButton, pos=QPoint(650, 300))
+    assert chart.objects == [first] and chart.preview is None
+    chart.set_tool(tool)
     QTest.mouseClick(chart, Qt.MouseButton.LeftButton, pos=QPoint(340, 180))
     if tool not in ('horizontal', 'vertical', 'text'):
         QTest.mouseClick(chart, Qt.MouseButton.LeftButton, pos=QPoint(550, 275))
@@ -344,7 +349,7 @@ def test_tools_create_edit_lock_delete_undo_redo(chart, app, monkeypatch, tool):
     assert len(chart.objects) == 2 and chart.objects[0] == first
     assert chart.objects[1]['id'] != first['id']
     QTest.keyClick(chart, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
-    assert chart.objects == [first] and chart.tool == tool
+    assert chart.objects == [first] and chart.tool == "cursor"
     chart.repaint()
     obj = chart.objects[0]
     before = deepcopy(obj["anchors"])
@@ -654,8 +659,9 @@ def test_single_click_on_existing_drawing_still_starts_and_finishes_drawing(char
     assert chart.pending_draw is None and chart.preview['anchors'][0] == expected
     QTest.mouseClick(chart, Qt.MouseButton.LeftButton, pos=QPoint(550, 290))
     assert len(chart.objects) == 2 and chart.objects[-1]['anchors'][0] == expected
-    assert chart.tool == 'trend'
+    assert chart.tool == 'cursor'
     # 快速点击另一个落点时，先完成前一个待判定的单击。
+    chart.set_tool('trend')
     QTest.mouseClick(chart, Qt.MouseButton.LeftButton, pos=start)
     QTest.mouseClick(chart, Qt.MouseButton.LeftButton, pos=QPoint(620, 260))
     assert len(chart.objects) == 3 and chart.preview is None
@@ -1104,9 +1110,13 @@ def test_workbench_shared_chart_maximize_and_close_keeps_service(app, service):
     menu.actions()[1].trigger()
     assert window.chart.canvas.tool == "trend"
     window.chart.canvas.draw_click(QPointF(240, 180))
-    window.chart.canvas.draw_click(QPointF(400, 220))
     assert window.chart.canvas.tool == 'trend'
     assert window.chart.tool_buttons['trend'].isChecked()
+    window.chart.canvas.draw_click(QPointF(400, 220))
+    assert window.chart.canvas.tool == 'cursor'
+    assert window.chart.tool_buttons['cursor'].isChecked()
+    assert not window.chart.tool_buttons['trend'].isChecked()
+    window.chart.choose_tool('trend')
     QTest.keyClick(window.chart.canvas, Qt.Key.Key_Escape)
     assert window.chart.canvas.tool == 'cursor'
     assert window.chart.tool_buttons['cursor'].isChecked()
@@ -1456,6 +1466,8 @@ def test_position_drawing_creation_edit_drag_and_restore(chart, app, monkeypatch
                          pos=QPoint(x, round(chart.price_y(price))))
         assert chart.position_stage == (index + 1) % 3
     assert len(opened) == 1 and len(chart.objects) == 1
+    assert chart.tool == 'cursor' and chart.preview is None
+    assert chart.cursor().shape() == Qt.CursorShape.ArrowCursor
     obj = chart.objects[0]
     assert obj['tool'] == tool and obj['notional_usdt'] == '2000'
     assert obj['anchors'][1][0] == obj['anchors'][2][0]
