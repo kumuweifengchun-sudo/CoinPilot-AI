@@ -81,6 +81,12 @@
 
 ### AI 与复盘
 
+手动账本通过 `review/manual.py` 校验与计算，`review/manual_widgets.py` 提供共用入口。记录使用 `manual:<book_id>` 作用域，独立保存交易、版本、账户快照与资金流水；金额采用 Decimal。简录与明细只能有一个有效计算来源，账户权益差额不能用于单笔盈亏。`manual` AI 会话只允许已授权的历史／复盘工具，不能读取实际账户或生成订单草稿；固定引用必须匹配当前账本。新增记录不迁移或覆盖既有 OKX 数据，截图附件保存在数据库旁。
+
+离线验证：`uv run --locked --group dev pytest -q tests/trading/test_manual_ledger.py tests/workbench/test_manual_entry.py`；截图与局部刷新测量：`uv run --locked python scripts/qa/verify_manual_ledger.py`。脚本使用临时数据库、空凭据和禁止网络的替身，产物位于 `artifacts/manual-ledger/`。
+
+交易图表快照由 `charts/snapshot.py` 同步采集可见图窗，不切换周期、不改画线、不触发历史获取；保存图片与独立 JSON 配置（包含自定义指标版本源码）。手动记录缺省 `chart_snapshots=[]` 兼容旧数据，图像以 SHA-256 校验并保存在账本附件目录；旧版本引用的图片不能随移除当前引用而删除。AI 只接收周期、采集时间和用户备注，不接收本地图片路径或完整配置。相关测试为 `tests/workbench/test_trade_snapshots.py`，离线截图脚本为 `uv run --locked python scripts/qa/verify_trade_snapshots.py`。
+
 - AI 仅分析事实或准备可编辑草稿，不能绕过订单确认；工具注册表不得提供提交、撤单、平仓或调整杠杆的执行接口。
 - AI 未配置、失败或取消不能阻塞公开行情、规则、手工交易和记录。
 - 盈亏、费用与统计由程序计算。外部交易、历史缺口及无法归属费用保持标记，不让 AI 补造数值或交易理由。

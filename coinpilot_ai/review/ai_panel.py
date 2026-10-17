@@ -148,7 +148,14 @@ class AiPanel(QGroupBox):
         self.cancel_button.setEnabled(False)
         if self.scene == "order":
             self.draft_button.setEnabled(True)
-        if record["scope"] != self.service.scope:
+        try:
+            current_context = self.context_provider() if self.scene == "review" else {}
+        except ValueError:
+            self.status.setText("当前选择已改变；报告保存在原账本或环境。")
+            return
+        book = current_context.get("manual_book_id")
+        expected_scope = self.service.manual_ledger.scope(book) if book else self.service.scope
+        if record["scope"] != expected_scope:
             self.status.setText("账户环境已切换；该请求结果保存在原环境。")
             return
         self.show_record(record)

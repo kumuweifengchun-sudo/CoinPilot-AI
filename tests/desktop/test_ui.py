@@ -90,6 +90,29 @@ def test_preview_draft_cancel_and_normalization(widget, app):
     dialog.deleteLater()
 
 
+def test_theme_draft_cancel_save_and_reload(widget, app):
+    from coinpilot_ai.ui.theme import DEFAULT_THEME_ID, LIGHT_THEME_ID, activate_theme, get_theme
+
+    dialog = SettingsDialog(widget, embedded=True)
+    try:
+        dialog.theme_combo.setCurrentIndex(dialog.theme_combo.findData(LIGHT_THEME_ID))
+        assert get_theme().id == DEFAULT_THEME_ID
+        assert widget.config["ui_theme"] == DEFAULT_THEME_ID
+        dialog.reject()
+        assert dialog.theme_combo.currentData() == DEFAULT_THEME_ID
+        dialog.theme_combo.setCurrentIndex(dialog.theme_combo.findData(LIGHT_THEME_ID))
+        dialog._save()
+        assert get_theme().id == LIGHT_THEME_ID
+        assert widget.store.load()["ui_theme"] == LIGHT_THEME_ID
+        reopened = SettingsDialog(widget)
+        assert reopened.theme_combo.currentData() == LIGHT_THEME_ID
+        reopened.deleteLater()
+    finally:
+        dialog.deleteLater()
+        app.processEvents()
+        activate_theme(DEFAULT_THEME_ID)
+
+
 def test_save_and_numeric_input_limits(widget):
     dialog = SettingsDialog(widget)
     assert {key: (slider.minimum(), slider.maximum()) for key, slider in dialog.number_inputs.items()} == {

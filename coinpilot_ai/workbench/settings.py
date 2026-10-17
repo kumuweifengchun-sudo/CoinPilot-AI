@@ -28,6 +28,7 @@ class SettingsPage(QWidget):
         root = QVBoxLayout(self)
         row = QHBoxLayout()
         self.navigation = QListWidget()
+        self.navigation.setObjectName("settingsNavigation")
         self.navigation.setFixedWidth(150)
         self.tabs = QStackedWidget()
         self.section_indices = {}

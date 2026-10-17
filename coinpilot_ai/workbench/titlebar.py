@@ -7,11 +7,12 @@ from PyQt6.QtWidgets import (QAbstractButton, QApplication, QButtonGroup, QDockW
                             QLabel, QMenu, QToolButton, QWidget)
 
 from coinpilot_ai.ui.icons import application_icon, icon
-from coinpilot_ai.ui.theme import color
+from coinpilot_ai.ui.theme import SPACING_XS, SPACING_SM, SPACING_MD, color
+from coinpilot_ai.ui.typography import font
 
 
 class WorkbenchTitleBar(QWidget):
-    HEIGHT = 40
+    HEIGHT = 48
 
     def __init__(self, owner, pages):
         super().__init__(owner)
@@ -20,13 +21,18 @@ class WorkbenchTitleBar(QWidget):
         self.setObjectName('workbenchTitleBar')
         self.setFixedHeight(self.HEIGHT)
         row = QHBoxLayout(self)
-        row.setContentsMargins(10, 0, 6, 0)
-        row.setSpacing(2)
+        row.setContentsMargins(SPACING_MD, 0, SPACING_SM, 0)
+        row.setSpacing(SPACING_XS)
         self.logo = QLabel()
         self.logo.setFixedSize(24, 24)
         self.logo.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         row.addWidget(self.logo)
-        row.addSpacing(8)
+        self.brand = QLabel('币航')
+        self.brand.setFont(font(16, bold=True))
+        self.brand.setObjectName('brandTitle')
+        self.brand.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        row.addWidget(self.brand)
+        row.addSpacing(SPACING_MD)
         self.view_button = QToolButton()
         self.view_button.setText('视图')
         self.view_button.setAccessibleName('视图')
@@ -71,7 +77,7 @@ class WorkbenchTitleBar(QWidget):
 
     def window_button(self, text, callback):
         button = QToolButton()
-        button.setFixedSize(42, self.HEIGHT - 8)
+        button.setFixedSize(40, self.HEIGHT - SPACING_SM)
         button.setProperty('windowControl', True)
         button.setIconSize(QSize(18, 18))
         button.setAccessibleName(text)
@@ -93,16 +99,19 @@ class WorkbenchTitleBar(QWidget):
 
     def apply_theme(self):
         self.setStyleSheet(
-            f'QWidget#workbenchTitleBar {{background:{color("surface")};}}'
-            'QToolButton {border:0; border-radius:4px; padding:6px 12px; background:transparent;}'
+            f'QWidget#workbenchTitleBar {{background:{color("surface")}; border-bottom:1px solid {color("border")};}}'
+            'QToolButton {border:1px solid transparent; border-radius:4px; padding:8px 16px; background:transparent;}'
             'QToolButton[windowControl="true"] {padding:0;}'
             f'QToolButton:hover {{background:{color("surface_hover")};}}'
             f'QToolButton:pressed {{background:{color("surface_selected")};}}'
-            f'QToolButton:checked {{background:{color("surface_selected")};color:{color("text")};}}'
+            f'QToolButton:checked {{background:{color("surface_selected")};color:{color("text")};font-weight:600;}}'
+            f'QToolButton:focus {{border-color:{color("focus")};}}'
+            f'QToolButton:disabled {{color:{color("text_muted")};background:{color("surface")};}}'
             'QToolButton::menu-indicator {width:0;}'
             f'QLabel#windowCaption {{color:{color("text_muted")};}}'
-            'QToolButton#windowClose:hover {background:#C42B3B;}'
-            'QToolButton#windowClose:pressed {background:#A92331;}')
+            f'QLabel#brandTitle {{color:{color("text")};font-size:16px;font-weight:600;}}'
+            f'QToolButton#windowClose:hover {{background:{color("negative")};}}'
+            f'QToolButton#windowClose:pressed {{background:{color("warning")};}}')
         self.logo.setPixmap(application_icon().pixmap(QSize(24, 24), self.devicePixelRatioF()))
         self.sync_controls()
 

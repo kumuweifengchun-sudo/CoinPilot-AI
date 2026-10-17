@@ -74,6 +74,8 @@ class ToolRegistry(QObject):
 
     @staticmethod
     def _allowed(definition: ToolDefinition, context: ToolContext) -> bool:
+        if context.environment == "manual" and definition.name not in ("get_trade_history", "get_trade_review"):
+            return False
         return (definition.permission not in ("account", "history")
                 or definition.permission == "account" and context.allow_account
                 or definition.permission == "history" and context.allow_history)

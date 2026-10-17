@@ -9,6 +9,8 @@ from urllib.parse import quote
 import uuid
 
 from coinpilot_ai.review.journal import aggregate, summarize
+from coinpilot_ai.review.manual import parse_reference, read_review
+from coinpilot_ai.core.store import encode
 from coinpilot_ai.review.query import JournalQuery, JournalQueryError, MAX_HISTORY_DAYS, MAX_QUERY_ROWS
 from coinpilot_ai.trading.models import instrument_id
 from ..models import JsonValue, validate_integer, validate_payload, validate_text
@@ -42,6 +44,8 @@ class ReviewTools:
 
     def _handler(self, name: str) -> ToolHandler:
         def handle(context: ToolContext, arguments: dict[str, JsonValue], callback: ToolCallback) -> RequestHandle:
+            if context.scope.startswith("manual:"):
+                return self.manual_handle(name, context, arguments, callback)
             now = context.captured_at
             pinned = arguments.get("event_id") or arguments.get("report_id")
             begin = validate_integer(arguments.get("begin", 0 if pinned else max(0, int(now) - 30 * 86400)), "开始时间")
@@ -188,3 +192,55 @@ class ReviewTools:
             job = self.service.io.submit(operation, done)
             return RequestHandle(uuid.uuid4().hex, lambda: self.service.io.cancel(job) if job is not None else None)
         return handle
+
+    def manual_handle(self, name: str, context: ToolContext, arguments: dict[str, JsonValue], callback: ToolCallback) -> RequestHandle:
+        if not context.allow_history or name not in ("get_trade_history", "get_trade_review"):
+            raise ValueError("未授权手动账本历史读取")
+        book_id = context.scope.removeprefix("manual:")
+        now = int(context.captured_at)
+        begin = validate_integer(arguments.get("begin", max(0, now - 30 * 86400)), "开始时间")
+        end = validate_integer(arguments.get("end", now), "结束时间")
+        limit = validate_integer(arguments.get("limit", 20), "记录数量", minimum=1)
+        if not 0 <= begin <= end <= now or end - begin > MAX_HISTORY_DAYS * 86400 or limit > 50:
+            raise ValueError("历史查询范围或数量无效")
+        instrument = validate_text(arguments["instrument"], "交易对").upper().replace("/", "-") if arguments.get("instrument") else None
+        if instrument and instrument.endswith("-SWAP"):
+            instrument = instrument[:-5]
+        trade_id = report_id = None
+        for field in ("trade_id", "report_id"):
+            if arguments.get(field):
+                parsed = parse_reference(validate_text(arguments[field], "手动记录引用"))
+                if parsed is None or parsed[0] != book_id:
+                    raise ValueError("不能跨手动账本读取记录")
+                if field == "trade_id":
+                    trade_id = parsed[1]
+                else:
+                    report_id = parsed[1]
+        path = self.service.store.path
+        def operation() -> dict[str, JsonValue]:
+            uri = "file:" + quote(Path(path).resolve().as_posix(), safe="/:") + "?mode=ro"
+            with sqlite3.connect(uri, uri=True) as db:
+                if report_id:
+                    row = db.execute("SELECT body FROM records WHERE scope=? AND kind='report' AND id=?", (context.scope, report_id)).fetchone()
+                    if row is None:
+                        raise ValueError("该账本中没有此报告")
+                    report = validate_payload(json.loads(row[0]))
+                    return payload({"report": report, "boundary_note": "历史报告与生成时快照，不代表当前账户事实"})
+                result = read_review(db, book_id, begin * 1000, end * 1000, [trade_id] if trade_id else None,
+                                     limit=limit, instrument=instrument)
+                # 附件路径不发送给模型；截图文件没有隐式上传行为。
+                clean = validate_payload(json.loads(encode(result)))
+                rows = clean.get("trades")
+                if isinstance(rows, list):
+                    for row in rows:
+                        if isinstance(row, dict):
+                            row["id"] = f"manual:{book_id}:{row['id']}"
+                            record = row.get("record")
+                            if isinstance(record, dict):
+                                record.pop("attachments", None)
+                return clean
+        def done(value: object, error: object) -> None:
+            callback(ToolResult.failure("手动历史不可用或超出范围，请缩小范围") if error else
+                     ToolResult(True, time.time(), "manual_ledger", "historical", (), validate_payload(value)))
+        job = self.service.io.submit(operation, done)
+        return RequestHandle(uuid.uuid4().hex, lambda: self.service.io.cancel(job) if job is not None else None)

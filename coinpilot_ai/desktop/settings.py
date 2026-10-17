@@ -14,7 +14,7 @@ from coinpilot_ai.core.config import DEFAULT_CONFIG, PROXY_LABELS, SOURCE_LABELS
 from coinpilot_ai.desktop.visuals import Quote, draw_ticker, ticker_size
 from coinpilot_ai.ui.typography import font, render_hints
 from coinpilot_ai.ui.icons import icon, set_button_icon
-from coinpilot_ai.ui.theme import color, events, style_sheet
+from coinpilot_ai.ui.theme import THEME_LABELS, color, events, style_sheet
 
 
 class Preview(QWidget):
@@ -173,6 +173,19 @@ class SettingsDialog(QDialog):
         self.mini_check.setToolTip("仅显示图标与价格，固定 12 像素字号；关闭后可调节完整模式字号")
         self.preview_check = QCheckBox("预览")
         appearance = self._card(body, "外观设置", toggle=self.mini_check, extra_toggle=self.preview_check)
+        theme_row = QHBoxLayout()
+        theme_label = QLabel("界面主题")
+        self.theme_combo = QComboBox()
+        for theme_id, label in THEME_LABELS.items():
+            self.theme_combo.addItem(label, theme_id)
+        self.theme_combo.setCurrentIndex(self.theme_combo.findData(self.draft["ui_theme"]))
+        self.theme_combo.setAccessibleName("界面主题")
+        self.theme_combo.setToolTip("保存设置后应用到工作台、图表和浮动面板")
+        theme_label.setBuddy(self.theme_combo)
+        theme_row.addWidget(theme_label)
+        theme_row.addStretch()
+        theme_row.addWidget(self.theme_combo)
+        appearance.addLayout(theme_row)
         self.preview = Preview(self.draft)
         appearance.addWidget(self.preview)
         self.preview.hide()
@@ -369,6 +382,7 @@ class SettingsDialog(QDialog):
         candidate["cycle_enabled"] = self.cycle_check.isChecked()
         candidate["mini_mode"] = self.mini_check.isChecked()
         candidate["price_source"] = self.source_combo.currentData()
+        candidate["ui_theme"] = self.theme_combo.currentData()
         candidate["auto_check_updates"] = self.auto_update_check.isChecked()
         try:
             candidate["proxy_host"] = normalize_proxy_host(self.proxy_host_edit.text())
@@ -417,6 +431,7 @@ class SettingsDialog(QDialog):
         self.number_inputs["text_size"].setValue(12 if self.draft["mini_mode"] else self._full_text_size)
         self.cycle_check.setChecked(self.draft["cycle_enabled"])
         self.source_combo.setCurrentIndex(self.source_combo.findData(self.draft["price_source"]))
+        self.theme_combo.setCurrentIndex(self.theme_combo.findData(self.draft["ui_theme"]))
         self.auto_update_check.setChecked(self.draft.get("auto_check_updates", True))
         self.proxy_check.setChecked(self.draft["proxy_enabled"])
         self.proxy_type_combo.setCurrentIndex(self.proxy_type_combo.findData(self.draft["proxy_type"]))

@@ -55,7 +55,7 @@ class WorkspaceSnapshot:
         validate_timestamp(self.captured_at, "快照时间")
         validate_text(self.scope, "scope", nonempty=True)
         validate_text(self.environment, "环境", nonempty=True)
-        if self.environment not in ("paper", "demo", "live", "replay") or self.scope.split(":", 1)[0] != self.environment:
+        if self.environment not in ("paper", "demo", "live", "replay", "manual") or self.scope.split(":", 1)[0] != self.environment:
             raise ValueError("快照环境与作用域不一致")
 
     def payload(self) -> dict[str, JsonValue]:

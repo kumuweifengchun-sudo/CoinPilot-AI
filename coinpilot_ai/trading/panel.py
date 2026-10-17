@@ -4,11 +4,12 @@ import uuid
 
 from PyQt6.QtCore import Qt, QObject, pyqtSignal
 from PyQt6.QtWidgets import (QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout,
-    QInputDialog, QLabel, QLineEdit, QScrollArea, QVBoxLayout, QWidget)
+    QInputDialog, QLabel, QLineEdit, QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
 
 from .models import OrderDraft, aligned, instrument_id, number
 from .risk import position_plan
 from coinpilot_ai.review.equity_curve import EquityCurve
+from coinpilot_ai.review.manual_widgets import ManualEntry
 from coinpilot_ai.ui.common import AccountTabs, button, confirm, fill_table, selected_id, table, timestamp
 from coinpilot_ai.ui.common import combo, select_data
 
@@ -171,7 +172,18 @@ class TradeController(QObject):
         side_layout.addWidget(self.submit_button)
         side_layout.addWidget(self.feedback)
         sidebar.setMinimumWidth(300)
-        self.sidebar = sidebar
+        self.manual_entry = ManualEntry(service)
+        self.entry_mode = combo([("trade", "下单交易"), ("manual", "手动记账")])
+        self.entry_stack = QStackedWidget()
+        self.entry_stack.addWidget(sidebar)
+        self.entry_stack.addWidget(self.manual_entry)
+        self.sidebar = QWidget()
+        wrapper = QVBoxLayout(self.sidebar)
+        wrapper.setContentsMargins(0, 0, 0, 0)
+        wrapper.addWidget(self.entry_mode)
+        wrapper.addWidget(self.entry_stack, 1)
+        self.entry_mode.currentIndexChanged.connect(self.entry_stack.setCurrentIndex)
+        self.entry_mode.currentIndexChanged.connect(lambda index: service.select_review_book("") if index == 0 else None)
         self.bottom.setMinimumSize(300, 190)
 
     def set_feedback(self, text):
@@ -234,6 +246,7 @@ class TradeController(QObject):
             self.set_feedback(str(exc))
 
     def load_draft(self, draft):
+        self.entry_mode.setCurrentIndex(0)
         self.form_requested.emit()
         self.source = draft.source
         self.inst.setText(draft.instrument)

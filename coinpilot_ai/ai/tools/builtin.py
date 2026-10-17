@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 
 def build_registry(service: "CockpitService") -> ToolRegistry:
-    registry = ToolRegistry(lambda: service.scope, service)
+    registry = ToolRegistry(lambda: service.ai_chat.scope if service.ai_chat is not None else service.scope, service)
     definitions = (MarketTools(service).definitions() + IndicatorTools(service).definitions() + AccountTools(service).definitions()
                    + ReviewTools(service).definitions() + RiskTools(service).definitions() + [order_definition()])
     for definition in definitions:

@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QComboBox, QDialog, QDialogButto
                             QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit, QVBoxLayout, QWidget)
 from coinpilot_ai.ui.qt import require
 from .icons import set_button_icon
-from .theme import style_sheet
+from .theme import TABLE_ROW_HEIGHT, style_sheet
 
 STYLE = style_sheet()
 
@@ -98,7 +98,7 @@ def table(headers, *, readable=False):
     widget.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
     widget.setAlternatingRowColors(True)
     widget.setShowGrid(False)
-    require(widget.verticalHeader()).setDefaultSectionSize(34)
+    require(widget.verticalHeader()).setDefaultSectionSize(TABLE_ROW_HEIGHT)
     widget.setWordWrap(False)
     require(widget.verticalHeader()).hide()
     header = require(widget.horizontalHeader())

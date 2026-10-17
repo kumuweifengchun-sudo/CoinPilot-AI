@@ -9,6 +9,14 @@ from PyQt6.QtWidgets import QApplication
 from coinpilot_ai.core.paths import resource_path
 
 DEFAULT_THEME_ID = "okx_dark"
+LIGHT_THEME_ID = "enterprise_light"
+THEME_LABELS = {DEFAULT_THEME_ID: "深色 · 午夜蓝", LIGHT_THEME_ID: "浅色 · 云白"}
+SPACING_XS = 4
+SPACING_SM = 8
+SPACING_MD = 16
+RADIUS_DEFAULT = 4
+RADIUS_LG = 8
+TABLE_ROW_HEIGHT = 32
 _ASSETS = resource_path("coinpilot_ai/assets/lucide").as_posix()
 
 
@@ -42,16 +50,29 @@ def register_theme(theme: Theme) -> None:
 
 
 register_theme(Theme(DEFAULT_THEME_ID, {
-    "background": "#0B0D10", "surface": "#121519", "surface_raised": "#1A1E23",
-    "surface_hover": "#23282E", "surface_selected": "#2B3138", "field": "#101317",
-    "border": "#2B3036", "border_strong": "#454C54", "text": "#F3F5F6",
-    "text_secondary": "#BEC5CC", "text_muted": "#89939D", "accent": "#F3F5F6",
-    "accent_text": "#101317", "focus": "#CAD4DE", "positive": "#22BA88",
-    "negative": "#F1636B", "warning": "#E9B45B", "chart_background": "#111419",
-    "chart_grid": "#262C32", "chart_axis": "#929CA6", "chart_crosshair": "#9EA8B3",
+    "background": "#0B121F", "surface": "#161C27", "surface_raised": "#1E2738",
+    "surface_hover": "#252D3D", "surface_selected": "#0040A2", "field": "#0B121F",
+    "border": "#252D3D", "border_strong": "#3D4560", "text": "#EDF0FF",
+    "text_secondary": "#C3C6D6", "text_muted": "#9CA3B8", "accent": "#B2C5FF",
+    "accent_text": "#051A3E", "focus": "#B2C5FF", "positive": "#22BA88",
+    "negative": "#F1636B", "warning": "#E9B45B", "chart_background": "#0B121F",
+    "chart_grid": "#252D3D", "chart_axis": "#9CA3B8", "chart_crosshair": "#B2C5FF",
     "volume_up": "#1E806A", "volume_down": "#A74750", "ema_fast": "#E9B45B",
-    "ema_slow": "#A0A6F7", "mini_background": "#121519",
-    "mini_border": "#535B63", "mini_text": "#F3F5F6", "tooltip": "#22272D",
+    "ema_slow": "#A0A6F7", "mini_background": "#161C27",
+    "mini_border": "#3D4560", "mini_text": "#EDF0FF", "tooltip": "#1E2738",
+}))
+
+register_theme(Theme(LIGHT_THEME_ID, {
+    "background": "#FAF9FF", "surface": "#FFFFFF", "surface_raised": "#F1F3FF",
+    "surface_hover": "#E1E8FF", "surface_selected": "#DAE2FF", "field": "#FFFFFF",
+    "border": "#C3C6D6", "border_strong": "#737685", "text": "#051A3E",
+    "text_secondary": "#434654", "text_muted": "#535F73", "accent": "#003D9B",
+    "accent_text": "#FFFFFF", "focus": "#0052CC", "positive": "#1E7D4A",
+    "negative": "#BA1A1A", "warning": "#B45309", "chart_background": "#FFFFFF",
+    "chart_grid": "#E1E8FF", "chart_axis": "#535F73", "chart_crosshair": "#003D9B",
+    "volume_up": "#1E7D4A", "volume_down": "#BA1A1A", "ema_fast": "#B45309",
+    "ema_slow": "#003D9B", "mini_background": "#FFFFFF", "mini_border": "#737685",
+    "mini_text": "#051A3E", "tooltip": "#F1F3FF",
 }))
 
 
@@ -99,20 +120,19 @@ def activate_theme(theme_id: str) -> str:
     app = QApplication.instance()
     if isinstance(app, QApplication):
         app.setPalette(palette())
-        if changed:
-            app.setStyleSheet(style_sheet())
+        app.setStyleSheet(style_sheet())
     if changed:
         events.changed.emit(_active_id)
     return _active_id
 
 
 _MENU = Template("""
-QMenu { background: ${surface_raised}; color: ${text}; border: 1px solid ${border}; border-radius: 7px; padding: 5px; }
+QMenu { background: ${surface_raised}; color: ${text}; border: 1px solid ${border}; border-radius: ${radius_lg}px; padding: ${space_xs}px; }
 QMenu::item { padding: 8px 24px 8px 12px; border-radius: 4px; }
 QMenu::item:selected { background: ${surface_selected}; color: ${text}; }
 QMenu::item:disabled { color: ${text_muted}; }
-QMenu::separator { height: 1px; background: ${border}; margin: 5px 9px; }
-QToolTip { color: ${text}; background: ${tooltip}; border: 1px solid ${border_strong}; padding: 6px; }
+QMenu::separator { height: 1px; background: ${border}; margin: ${space_xs}px ${space_sm}px; }
+QToolTip { color: ${text}; background: ${tooltip}; border: 1px solid ${border_strong}; padding: ${space_sm}px; }
 """)
 
 _STYLE = Template("""
@@ -123,26 +143,26 @@ QWidget#dockTitleBar { background: ${surface_raised}; }
 QWidget#dockTitleBar QToolButton { padding: 0; border: none; border-radius: 3px; background: transparent; }
 QWidget#dockTitleBar QToolButton:hover { background: ${surface_hover}; }
 QWidget#dockTitleBar QToolButton:pressed { background: ${surface_selected}; }
-QMainWindow::separator { background: ${border}; width: 5px; height: 5px; }
+QMainWindow::separator { background: ${border}; width: ${space_xs}px; height: ${space_xs}px; }
 QMainWindow::separator:hover { background: ${border_strong}; }
 QWidget { color: ${text_secondary}; font-family: 'Inter Variable', 'Microsoft YaHei UI'; font-size: 12px; }
 QLabel { background: transparent; border: none; }
-QLabel#title { font-size: 18px; font-weight: 600; color: ${text}; }
+QLabel#title { font-size: 20px; font-weight: 600; color: ${text}; }
 QLabel#muted { color: ${text_muted}; }
 QLabel#sectionTitle { font-size: 13px; font-weight: 600; color: ${text}; padding: 4px 0; }
 QWidget#sidePanel { background: ${surface}; border: 1px solid ${border}; border-radius: 8px; }
 QWidget#tradeFormContent { background: ${surface}; }
 QTabWidget::pane { border: 1px solid ${border}; background: ${surface}; border-radius: 6px; top: -1px; }
 QTabBar { background: transparent; }
-QTabBar::tab { background: transparent; padding: 9px 15px; margin-right: 3px; color: ${text_muted}; border-bottom: 2px solid transparent; }
+QTabBar::tab { background: transparent; padding: ${space_sm}px ${space_md}px; margin-right: ${space_xs}px; color: ${text_muted}; border-bottom: 2px solid transparent; }
 QTabBar::tab:hover { color: ${text}; background: ${surface_hover}; }
-QTabBar::tab:selected { color: ${text}; border-bottom-color: ${accent}; background: ${surface_raised}; }
+QTabBar::tab:selected { color: ${accent}; border-bottom-color: ${accent}; background: ${surface_raised}; }
 QTabWidget#navigation::pane { border: 0; background: ${surface}; }
 QTabWidget#navigation > QTabBar::tab { padding: 10px 22px; font-size: 13px; font-weight: 600; }
-QGroupBox { background: ${surface}; border: 1px solid ${border}; border-radius: 7px; margin-top: 10px; padding: 10px 8px 7px; }
+QGroupBox { background: ${surface}; border: 1px solid ${border}; border-radius: ${radius_lg}px; margin-top: ${space_md}px; padding: ${space_sm}px; }
 QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; color: ${text_secondary}; }
 QLineEdit, QTextEdit, QTextBrowser, QPlainTextEdit, QComboBox, QSpinBox, QDoubleSpinBox, QDateTimeEdit {
- background: ${field}; color: ${text}; border: 1px solid ${border}; border-radius: 6px; padding: 5px 8px;
+ background: ${field}; color: ${text}; border: 1px solid ${border}; border-radius: 6px; padding: ${space_xs}px ${space_sm}px;
  selection-background-color: ${surface_selected}; selection-color: ${text}; }
 QLineEdit:hover, QComboBox:hover, QAbstractSpinBox:hover { border-color: ${border_strong}; }
 QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QComboBox:focus, QAbstractSpinBox:focus { border-color: ${focus}; }
@@ -155,15 +175,17 @@ QAbstractSpinBox::up-button { subcontrol-origin: border; subcontrol-position: to
 QAbstractSpinBox::down-button { subcontrol-origin: border; subcontrol-position: bottom right; width: 18px; border: 0; }
 QAbstractSpinBox::up-arrow { image: url(${assets}/chevron-up.svg); width: 10px; height: 10px; }
 QAbstractSpinBox::down-arrow { image: url(${assets}/chevron-down.svg); width: 10px; height: 10px; }
-QPushButton, QToolButton { background: ${surface_raised}; border: 1px solid ${border}; border-radius: 6px; padding: 6px 10px; color: ${text_secondary}; }
+QPushButton, QToolButton { background: ${surface_raised}; border: 1px solid ${border}; border-radius: 6px; padding: ${space_sm}px ${space_sm}px; color: ${text_secondary}; }
 QPushButton:hover, QToolButton:hover { background: ${surface_hover}; border-color: ${border_strong}; color: ${text}; }
 QPushButton:pressed, QToolButton:pressed { background: ${surface_selected}; }
 QPushButton:focus, QToolButton:focus { border-color: ${focus}; }
 QPushButton:checked, QToolButton:checked { background: ${surface_selected}; border-color: ${border_strong}; color: ${text}; }
 QPushButton#primary { background: ${accent}; border-color: ${accent}; color: ${accent_text}; font-weight: 600; }
-QPushButton#primary:hover { background: ${text_secondary}; border-color: ${text_secondary}; }
+QPushButton#primary:hover { background: ${focus}; border-color: ${focus}; }
+QPushButton#primary:pressed { background: ${surface_selected}; color: ${text}; border-color: ${focus}; }
+QPushButton#primary:focus { border-color: ${text}; }
 QPushButton:disabled, QPushButton#primary:disabled, QToolButton:disabled { color: ${text_muted}; background: ${surface}; border-color: ${border}; }
-QCheckBox, QRadioButton { spacing: 7px; background: transparent; min-height: 18px; }
+QCheckBox, QRadioButton { spacing: ${space_sm}px; background: transparent; min-height: 18px; }
 QCheckBox::indicator, QGroupBox::indicator { width: 14px; height: 14px; background: ${field}; border: 1px solid ${border_strong}; border-radius: 4px; }
 QCheckBox::indicator:checked, QGroupBox::indicator:checked { background: ${surface_selected}; border-color: ${accent}; image: url(${assets}/check.svg); }
 QGroupBox::indicator { width: 14px; height: 14px; background: transparent; border: none; image: url(${assets}/chevron-right.svg); }
@@ -171,12 +193,12 @@ QGroupBox::indicator:checked { background: transparent; border: none; image: url
 QCheckBox::indicator:hover { border-color: ${focus}; }
 QCheckBox:disabled { color: ${text_muted}; }
 QTableWidget, QListWidget { background: ${surface}; alternate-background-color: ${surface_raised}; border: 1px solid ${border}; border-radius: 6px; outline: 0; }
-QTableWidget::item { padding: 5px 7px; border: none; border-bottom: 1px solid ${border}; }
-QListWidget::item { padding: 10px 8px; border-radius: 4px; }
+QTableWidget::item { padding: ${space_xs}px ${space_sm}px; border: none; border-bottom: 1px solid ${border}; }
+QListWidget::item { padding: ${space_sm}px; border-radius: 4px; }
 QTableWidget::item:selected, QListWidget::item:selected { background: ${surface_selected}; color: ${text}; }
-QTableWidget::item:hover, QListWidget::item:hover { background: ${surface_hover}; }
+QTableWidget::item:hover:!selected, QListWidget::item:hover:!selected { background: ${surface_hover}; }
 QHeaderView { background: ${surface_raised}; }
-QHeaderView::section { background: ${surface_raised}; color: ${text_secondary}; font-weight: 500; padding: 7px; border: none; border-bottom: 1px solid ${border}; }
+QHeaderView::section { background: ${surface_raised}; color: ${text_secondary}; font-weight: 600; padding: ${space_sm}px; border: none; border-bottom: 1px solid ${border}; }
 QTableCornerButton::section { background: ${surface_raised}; border: none; }
 QScrollArea { border: none; background: transparent; }
 QScrollBar:vertical { width: 6px; background: transparent; margin: 2px 0; }
@@ -190,15 +212,34 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
 QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 QSplitter::handle { background: ${border}; }
 QSplitter::handle:hover { background: ${border_strong}; }
+QWidget#dockTitleBar QLabel { color: ${text}; font-weight: 600; }
+QListWidget#settingsNavigation { background: ${surface}; border: none; padding: ${space_sm}px; }
+QListWidget#settingsNavigation::item { padding: 12px ${space_sm}px; margin-bottom: ${space_xs}px; }
+QListWidget#settingsNavigation::item:selected { background: ${surface_selected}; color: ${text}; }
+QLabel#workbenchStatus { color: ${text_muted}; padding: ${space_xs}px ${space_sm}px; }
+QTabBar::tab:disabled { color: ${text_muted}; background: ${surface}; }
+QTextEdit:disabled, QPlainTextEdit:disabled { color: ${text_muted}; background: ${surface}; }
+QRadioButton::indicator { width: 16px; height: 16px; border: 1px solid ${border_strong}; border-radius: 8px; background: ${field}; }
+QRadioButton::indicator:checked { background: ${accent}; border-color: ${accent}; }
+QRadioButton::indicator:hover, QCheckBox:focus, QRadioButton:focus { color: ${accent}; }
+QRadioButton:disabled { color: ${text_muted}; }
+QProgressBar { background: ${surface_raised}; border: 1px solid ${border}; border-radius: ${radius_default}px; text-align: center; color: ${text}; }
+QProgressBar::chunk { background: ${surface_selected}; border-radius: ${radius_default}px; }
+
 """)
 
 
+_METRICS = {"space_xs": str(SPACING_XS), "space_sm": str(SPACING_SM),
+            "space_md": str(SPACING_MD), "radius_default": str(RADIUS_DEFAULT),
+            "radius_lg": str(RADIUS_LG)}
+
+
 def menu_style(theme_id: str | None = None) -> str:
-    return _MENU.substitute(get_theme(theme_id).colors)
+    return _MENU.substitute(get_theme(theme_id).colors | _METRICS)
 
 
 def style_sheet(theme_id: str | None = None) -> str:
-    return _STYLE.substitute(get_theme(theme_id).colors | {"assets": _ASSETS}) + menu_style(theme_id)
+    return _STYLE.substitute(get_theme(theme_id).colors | _METRICS | {"assets": _ASSETS}) + menu_style(theme_id)
 
 
 def chart_controls_style() -> str:

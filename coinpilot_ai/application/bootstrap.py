@@ -2,12 +2,14 @@
 
 import argparse
 import faulthandler
+import os
 from pathlib import Path
 import sys
 import sqlite3
 
 from PyQt6.QtCore import QCoreApplication, QEvent, QLibraryInfo, QLocale, QTimer, QTranslator, Qt
 from PyQt6.QtWidgets import QApplication, QMessageBox
+from PyQt6.QtNetwork import QSslSocket
 
 from coinpilot_ai.core.config import ICON_CACHE_DIR, SETTINGS_FILE, SettingsStore
 from coinpilot_ai.ui.icons import application_icon
@@ -31,7 +33,28 @@ class CoinPilotApplication(QApplication):
 _diagnostic_file = None
 
 
+def configure_windows_tls() -> None:
+    if sys.platform != "win32":
+        return
+    system_root = os.environ.get("SystemRoot")
+    if not system_root:
+        raise RuntimeError("无法定位 Windows 系统目录，TLS 后端初始化失败。")
+    previous_path = os.environ.get("PATH")
+    try:
+        # Qt 选择后端时也会探测 OpenSSL。隔离 PATH，避免第三方 libssl
+        # 与 Python 已加载的同名 libcrypto 混用，触发入口点缺失异常。
+        os.environ["PATH"] = str(Path(system_root) / "System32")
+        if not QSslSocket.setActiveBackend("schannel"):
+            raise RuntimeError("Windows Schannel TLS 后端不可用，无法安全启动网络服务。")
+    finally:
+        if previous_path is None:
+            os.environ.pop("PATH", None)
+        else:
+            os.environ["PATH"] = previous_path
+
+
 def create_application(argv):
+    configure_windows_tls()
     # Qt 6 已启用高 DPI；保留 125%/150% 等真实比例，字号不再手动乘 DPI。
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = CoinPilotApplication(argv)

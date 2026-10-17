@@ -74,6 +74,11 @@ class AiChatPanel(QWidget):
         self.regenerate_button.clicked.connect(self.regenerate)
         header.addWidget(self.regenerate_button)
         root.addLayout(header)
+        self.context_source = QComboBox()
+        self.context_source.setToolTip("对话按交易账户或手动账本隔离；切换会停止当前请求")
+        self.context_source.currentIndexChanged.connect(
+            lambda: self.business.select_review_book(str(self.context_source.currentData() or "")))
+        root.addWidget(self.context_source)
         self.providers = QComboBox()
         self.providers.currentIndexChanged.connect(self.choose_provider)
         root.addWidget(self.providers)
@@ -134,7 +139,7 @@ class AiChatPanel(QWidget):
         self.reload()
 
     def business_changed(self, kind: str) -> None:
-        if kind in ("environment", "ai_settings"):
+        if kind in ("environment", "ai_settings", "manual"):
             self.reload()
 
     def _run(self, operation: Callable[[], object]) -> None:
@@ -169,6 +174,14 @@ class AiChatPanel(QWidget):
             self.render_timer.stop()
             return
         key = (chat.scope, chat.conversation.id)
+        self.context_source.blockSignals(True)
+        self.context_source.clear()
+        self.context_source.addItem("对话范围 · 当前交易账户", "")
+        for book in self.business.manual_ledger.books():
+            self.context_source.addItem(f"手动账本 · {book['name']} / {book['account']}", book["id"])
+        book_id = chat.scope.removeprefix("manual:") if chat.scope.startswith("manual:") else ""
+        self.context_source.setCurrentIndex(max(0, self.context_source.findData(book_id)))
+        self.context_source.blockSignals(False)
         if self._shown is not None and self._shown != key:
             self._drafts[self._shown] = self.input.toPlainText()
             self.input.setPlainText(self._drafts.get(key, ""))

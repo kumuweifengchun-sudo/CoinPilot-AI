@@ -12,6 +12,8 @@ class EquityCurve(QWidget):
         super().__init__(parent)
         self.store, self.scope = store, scope
         self.points = None
+        self.caption = "资产曲线 · USDT"
+        self.empty_text = "暂无模拟成交"
         self.setMinimumHeight(95)
 
     def set_points(self, points):
@@ -23,13 +25,13 @@ class EquityCurve(QWidget):
         p = QPainter(self)
         p.fillRect(self.rect(), QColor(color("chart_background")))
         p.setPen(QColor(color("text_secondary")))
-        p.drawText(8, 17, "资产曲线 · USDT")
+        p.drawText(8, 17, self.caption)
         rows = (self.points if self.points is not None else
                 sorted((row for _, row in self.store.list("paper_equity", self.scope)),
                        key=lambda row: int(row["time"])))
         values = [float(row["equity"]) for row in rows]
         if not values:
-            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "暂无模拟成交")
+            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.empty_text)
             return
         left, right, top, bottom = 45, self.width()-65, 27, self.height()-16
         if right <= left or bottom <= top:

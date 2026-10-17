@@ -77,6 +77,7 @@ def verify_native_titlebar(window, output):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--all", action="store_true")
+    parser.add_argument("--theme", choices=("okx_dark", "enterprise_light"), default="okx_dark")
     parser.add_argument("--native", action="store_true", help="用临时数据检查 Windows 原生停靠交互")
     parser.add_argument("--output", type=Path, default=ROOT / "artifacts" / "workbench")
     args = parser.parse_args()
@@ -84,7 +85,7 @@ def main():
         os.environ["QT_QPA_PLATFORM"] = "windows"
     if args.all:
         for scale in ("1", "1.25", "1.5", "1.75", "2"):
-            subprocess.run([sys.executable, str(Path(__file__).resolve()), "--output", str(args.output / scale)],
+            subprocess.run([sys.executable, str(Path(__file__).resolve()), "--theme", args.theme, "--output", str(args.output / scale)],
                 env=dict(os.environ, QT_SCALE_FACTOR=scale), check=True, timeout=45)
         return
     app = create_application([])
@@ -96,7 +97,7 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="crypto-workbench-qa-") as folder, ExitStack() as cleanup:
         path = Path(folder)
-        config = dict(DEFAULT_CONFIG, proxy_enabled=False)
+        config = dict(DEFAULT_CONFIG, proxy_enabled=False, ui_theme=args.theme)
         service = CockpitService(config, path / "workbench.db", path / "icons", vault=EmptyVault(), autostart=False)
         cleanup.callback(service.close)
         # 禁止渲染过程中由页面操作启动网络请求。

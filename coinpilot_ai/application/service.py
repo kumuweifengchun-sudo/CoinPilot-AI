@@ -27,6 +27,7 @@ from coinpilot_ai.market.derivatives import DerivativeMonitor
 from coinpilot_ai.trading.models import instrument_id, number, aligned
 from coinpilot_ai.trading.history import HistorySync
 from coinpilot_ai.review.journal import aggregate, summarize
+from coinpilot_ai.review.manual import ManualLedger
 from coinpilot_ai.integrations.okx import OkxClient
 from coinpilot_ai.trading.paper import PaperBroker
 from coinpilot_ai.core.credentials import CredentialVault
@@ -60,6 +61,7 @@ class CockpitService(QObject):
         super().__init__(parent)
         self.config = dict(config)
         self.store = Store(data_path)
+        self.manual_ledger = ManualLedger(self.store)
         # 主图、回放和回测共用持久 K 线缓存；主图内存只保留工作窗口。
         self._market_cache = None
         self._market_cache_lock = Lock()
@@ -699,16 +701,29 @@ class CockpitService(QObject):
         row = self.store.get("template", mapping.get("template", ""))
         return row if row and row["scenario"] == scene else self.prompts.templates(scene)[0][1]
 
+    def select_review_book(self, book_id: str) -> None:
+        scope = self.manual_ledger.scope(book_id) if book_id else self.scope
+        if self.ai_chat is not None and self.ai_chat.scope != scope:
+            self.ai_chat.set_scope(scope)
+
     def ask_ai(self, scene, context, template=None, draft=False, event_id=None):
         config = self.scene_service(scene)
         if not config:
             raise ValueError("请先在设置中为该场景选择 AI 服务")
+        manual_book = context.get("manual_book_id") if scene == "review" else None
+        if manual_book and not ProviderConfig.from_record(config).allow_history:
+            raise ValueError("请先为该 AI 服务开启交易历史与复盘读取权限")
+        if manual_book:
+            context = deepcopy(context)
+            for trade in context.get("trades", []):
+                if isinstance(trade, dict) and isinstance(trade.get("record"), dict):
+                    trade["record"].pop("attachments", None)
         template = deepcopy(template or self.scene_template(scene))
         prompt = render_prompt(template["body"], context)
         if len(prompt) > 240000:
             raise ValueError("所选上下文过大，请缩小交易范围后重试")
         task = uuid.uuid4().hex
-        scope = self.scope
+        scope = self.manual_ledger.scope(manual_book) if manual_book else self.scope
         record = {"scene": scene, "context": deepcopy(context), "template": template,
                   "service": {k: config[k] for k in ("name", "protocol", "model")},
                   "time": time.time(), "draft_requested": draft, "event_id": event_id, "status": "running"}

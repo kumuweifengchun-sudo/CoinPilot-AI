@@ -24,6 +24,8 @@ def ensure_journal_indexes(db: sqlite3.Connection) -> bool:
     except sqlite3.OperationalError:
         return False
     with db:
+        db.execute("CREATE INDEX IF NOT EXISTS manual_trade_review_time ON records(scope,json_extract(body,'$.review_time'),id) "
+                   "WHERE kind='manual_trade' AND json_valid(body)")
         for kind, stamp in (("fills", FILL_TIME), ("bills", BILL_TIME)):
             db.execute(f"CREATE INDEX IF NOT EXISTS journal_{kind}_time ON records(scope,{stamp},id) "
                        f"WHERE kind='{kind}' AND json_valid(body)")

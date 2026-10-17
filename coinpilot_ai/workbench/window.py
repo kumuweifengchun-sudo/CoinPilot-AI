@@ -20,10 +20,11 @@ from .workspace import WorkspaceLayout
 from .profiles import WorkspaceProfiles
 from .titlebar import WorkbenchTitleBar
 from coinpilot_ai.ui.icons import icon
-from coinpilot_ai.ui.theme import events, style_sheet
+from coinpilot_ai.ui.theme import SPACING_XS, SPACING_SM, events, style_sheet
 from .watchlist import WatchlistDelegate
 from .ai_chat import AiChatPanel
 from .ai_context import WorkbenchAiContext
+from coinpilot_ai.charts.snapshot import CapturedChart, capture_chart
 
 
 class Workbench(QMainWindow):
@@ -52,14 +53,15 @@ class Workbench(QMainWindow):
         self.title_bar = WorkbenchTitleBar(self, self.pages)
         root.addWidget(self.title_bar)
         body = QVBoxLayout()
-        body.setContentsMargins(8, 0, 8, 6)
-        body.setSpacing(4)
+        body.setContentsMargins(SPACING_SM, SPACING_SM, SPACING_SM, SPACING_XS)
+        body.setSpacing(SPACING_XS)
         body.addWidget(self.pages, 1)
         root.addLayout(body, 1)
         self.trade = TradeController(service, self)
         self.chart = ChartPanel(service, trading=True)
         market = self.make_market()
         self.ai_context = WorkbenchAiContext(service, self.multi_chart, self)
+        self.trade.manual_entry.bind_chart_capture(self.capture_trade_charts)
         self.ai_chat = AiChatPanel(service, self.ai_context.capture, chart_provider=self.ai_context.panel)
         self.ai_chat.draft_ready.connect(self.load_ai_draft)
         self.make_information()
@@ -83,6 +85,7 @@ class Workbench(QMainWindow):
             dock.visibilityChanged.connect(self.sync_visible)
         self.review = ReviewPage(service)
         self.review.chat_requested.connect(self.discuss_review)
+        self.review.manual_requested.connect(self.open_manual_entry)
         self.review_tabs = QTabWidget()
         self.review_tabs.addTab(self.review, "交易复盘")
         self._replay = self._strategy_page = None
@@ -94,7 +97,7 @@ class Workbench(QMainWindow):
         self.chart.preferences_requested.connect(lambda: self.open_settings("图表"))
         self.pages.addTab(self.settings_page, icon("settings"), "设置")
         self.status = QLabel()
-        self.status.setObjectName("muted")
+        self.status.setObjectName("workbenchStatus")
         body.addWidget(self.status)
         self.setCentralWidget(root_widget)
         events.changed.connect(self.apply_theme)
@@ -329,6 +332,19 @@ class Workbench(QMainWindow):
         facts = {k: v for k, v in event.items() if k not in ("context", "analysis")}
         self.event_detail.setMarkdown(f"### {event['name']}\n\n```json\n{encode(facts)}\n```\n\n")
         self.events_seen.emit()
+
+    def open_manual_entry(self, book_id: str, trade_id: str) -> None:
+        entry = self.trade.manual_entry
+        if trade_id:
+            entry.load_trade(self.service.manual_ledger.get(book_id, trade_id))
+        elif not entry.start_new(book_id):
+            return
+        self.trade.entry_mode.setCurrentIndex(1)
+        self.show_order_form()
+
+    def capture_trade_charts(self, all_charts: bool) -> list[CapturedChart]:
+        panels = self.multi_chart.panels[:self.multi_chart.panel_count] if all_charts else [self.ai_context.panel()]
+        return [capture_chart(panel) for panel in panels]
 
     def page_changed(self, index):
         if self.service.closed or not hasattr(self, "settings_page"):

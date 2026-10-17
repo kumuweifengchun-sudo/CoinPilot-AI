@@ -39,6 +39,9 @@ class WorkbenchAiContext(QObject):
         return self.active_panel if self.active_panel in self.multi.panels[:self.multi.panel_count] else self.multi.panels[0]
 
     def capture(self) -> WorkspaceSnapshot:
+        chat = self.service.ai_chat
+        if chat is not None and chat.scope.startswith("manual:"):
+            return WorkspaceSnapshot(time.time(), chat.scope, "manual")
         panel = self.panel()
         canvas = panel.canvas
         start, end = canvas.visible()
